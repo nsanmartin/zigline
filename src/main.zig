@@ -68,7 +68,112 @@ fn enableRawMode(fd: i32) !void {
     rawmode = true;
 }
 
+const Error = error{ Read, Write };
+
+fn getChar(in: std.fs.File) !u8 {
+    var buf: [1]u8 = undefined;
+    const read = try in.reader().read(&buf);
+    if (read < 1) {
+        //try stdout.print("Run `zig build test` to run the tests.\n", .{});
+        return Error.Read;
+    }
+    return buf[0];
+}
+
+fn getLine(in: std.fs.File, out: std.fs.File) !void {
+    var bw = std.io.bufferedWriter(out.writer());
+    const stdout_writer = bw.writer();
+    var c: u8 = undefined;
+    var buf = [_]u8{0};
+
+    while (c != @intFromEnum(KeyAction.ENTER) and c != @intFromEnum(KeyAction.CTRL_D)) {
+        c = try getChar(in);
+        if (c == @intFromEnum(KeyAction.ENTER) and c == @intFromEnum(KeyAction.CTRL_D)) {
+            return;
+        }
+        if (c == @intFromEnum(KeyAction.ESC)) {
+            const s0 = try getChar(in);
+            const s1 = try getChar(in);
+            if (s0 == '[') {
+                if (s1 >= '0' and s1 <= '9') { // Extended escape, read additional byte.
+                    const s2 = try getChar(in);
+                    if (s2 == '~') {
+                        switch (s1) {
+                            '3' => try stdout_writer.print("Del", .{}),
+                            else => try stdout_writer.print("`Esc[N?~`", .{}),
+                        }
+                    }
+                } else {
+                    switch (s1) {
+                        'A' => try stdout_writer.print("Up", .{}),
+                        'B' => try stdout_writer.print("Down", .{}),
+                        'C' => try stdout_writer.print("Right", .{}),
+                        'D' => try stdout_writer.print("Left", .{}),
+                        'H' => try stdout_writer.print("Home", .{}),
+                        'F' => try stdout_writer.print("End", .{}),
+                        else => try stdout_writer.print("`Esc[?`", .{}),
+                    }
+                }
+            } else if (s0 == 'O') {
+                switch (s1) {
+                    'H' => try stdout_writer.print("Home", .{}),
+                    'F' => try stdout_writer.print("End", .{}),
+                    else => try stdout_writer.print("`EscO?`", .{}),
+                }
+            }
+        } else {
+            buf[0] = c;
+            const written = try stdout_writer.write(&buf);
+            if (written <= 0) {
+                return Error.Write;
+            }
+        }
+        try bw.flush(); // don't forget to flush!
+    }
+}
+
+fn testMe0(in: std.fs.File) !void {
+    var c: u8 = undefined;
+    c = try in.reader().readByte();
+    var buf: []u8 = undefined;
+    buf[0] = c;
+    //try out.writer().print("Char read: '{c}'\n", .{c});
+}
+
+fn testMe(in: std.fs.File, out: std.fs.File) !void {
+    var c: u8 = undefined;
+    c = try in.reader().readByte();
+    var buf: []u8 = undefined;
+    buf[0] = c;
+    try out.writer().print("Char read: '{c}'\n", .{c});
+}
+
 pub fn main() !void {
+    const stdout = std.io.getStdOut();
+    const stdout_file = stdout.writer();
+    var bw = std.io.bufferedWriter(stdout_file);
+    const stdout_writer = bw.writer();
+    const stdin = std.io.getStdIn(); //.reader();
+    try enableRawMode(os.STDIN_FILENO);
+
+    try stdout_writer.print("Line User Interface :) ", .{});
+    try bw.flush(); // don't forget to flush!
+
+    try getLine(stdin, stdout);
+    //try testMe0(stdin);
+    //try testMe(stdin, stdout);
+    //var buf: [1]u8 = undefined;
+    //const read = try stdin.read(&buf);
+    //if (read < 1) {
+    //    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+    //}
+    //try stdout.print("char read: {c}", .{buf[0]});
+
+    try bw.flush(); // don't forget to flush!
+    try disableRawMode(os.STDIN_FILENO);
+}
+
+pub fn main_() !void {
     const stdout_file = std.io.getStdOut().writer();
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout = bw.writer();

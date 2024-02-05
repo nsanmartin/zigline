@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     const exe = b.addExecutable(.{
-        .name = "lui",
+        .name = "lineui",
         .root_source_file = .{ .path = "src/main.zig" },
         .target = target,
         .optimize = optimize,
