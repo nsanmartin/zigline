@@ -9,6 +9,30 @@ const VTIME = 5; // TODO: where is this?
 var rawmode: bool = false; // For atexit() function to check if restore is needed
 var orig_termios: os.termios = undefined;
 
+const LineState = struct {
+    // struct linenoiseState {
+    //     int in_completion;  /* The user pressed TAB and we are now in completion
+    //                          * mode, so input is handled by completeLine(). */
+    //     size_t completion_idx; /* Index of next completion to propose. */
+    //     int ifd;            /* Terminal stdin file descriptor. */
+    //     int ofd;            /* Terminal stdout file descriptor. */
+    //     char *buf;          /* Edited line buffer. */
+    //     size_t buflen;      /* Edited line buffer size. */
+    //     const char *prompt; /* Prompt to display. */
+    //     size_t plen;        /* Prompt length. */
+    //     size_t pos;         /* Current cursor position. */
+    //     size_t oldpos;      /* Previous refresh cursor position. */
+    //     size_t len;         /* Current edited line length. */
+    //     size_t cols;        /* Number of columns in terminal. */
+    //     size_t oldrows;     /* Rows used by last refrehsed line (multiline mode) */
+    //     int history_index;  /* The history index we are currently editing. */
+    // };
+
+    in: std.fs.File,
+    out: std.fs.File,
+    buf: std.ArrayList(u8),
+};
+
 const KeyAction = enum(u8) {
     KEY_NULL = 0, // NULL
     CTRL_A = 1, // Ctrl+a
@@ -80,7 +104,7 @@ fn getChar(in: std.fs.File) !u8 {
     return buf[0];
 }
 
-fn getLine(in: std.fs.File, out: std.fs.File) !void {
+fn getLine_(in: std.fs.File, out: std.fs.File) !void {
     var bw = std.io.bufferedWriter(out.writer());
     const stdout_writer = bw.writer();
     var c: u8 = undefined;
@@ -132,6 +156,64 @@ fn getLine(in: std.fs.File, out: std.fs.File) !void {
     }
 }
 
+fn readline(s: *LineState) !void {
+    var bw = std.io.bufferedWriter(s.out.writer());
+    const stdout_writer = bw.writer();
+    var c: u8 = undefined;
+    var buf = [_]u8{0};
+
+    while (c != @intFromEnum(KeyAction.ENTER) and c != @intFromEnum(KeyAction.CTRL_D)) {
+        c = try getChar(s.in);
+        if (c == @intFromEnum(KeyAction.ENTER) and c == @intFromEnum(KeyAction.CTRL_D)) {
+            buf[0] = '\n';
+            const written = try stdout_writer.write(&buf);
+            if (written <= 0) {
+                return Error.Write;
+            }
+            return;
+        }
+        if (c == @intFromEnum(KeyAction.ESC)) {
+            const s0 = try getChar(s.in);
+            const s1 = try getChar(s.in);
+            if (s0 == '[') {
+                if (s1 >= '0' and s1 <= '9') { // Extended escape, read additional byte.
+                    const s2 = try getChar(s.in);
+                    if (s2 == '~') {
+                        switch (s1) {
+                            '3' => try stdout_writer.print("Del", .{}),
+                            else => try stdout_writer.print("`Esc[N?~`", .{}),
+                        }
+                    }
+                } else {
+                    switch (s1) {
+                        'A' => try stdout_writer.print("Up", .{}),
+                        'B' => try stdout_writer.print("Down", .{}),
+                        'C' => try stdout_writer.print("Right", .{}),
+                        'D' => try stdout_writer.print("Left", .{}),
+                        'H' => try stdout_writer.print("Home", .{}),
+                        'F' => try stdout_writer.print("End", .{}),
+                        else => try stdout_writer.print("`Esc[?`", .{}),
+                    }
+                }
+            } else if (s0 == 'O') {
+                switch (s1) {
+                    'H' => try stdout_writer.print("Home", .{}),
+                    'F' => try stdout_writer.print("End", .{}),
+                    else => try stdout_writer.print("`EscO?`", .{}),
+                }
+            }
+        } else {
+            buf[0] = c;
+            const written = try stdout_writer.write(&buf);
+            if (written <= 0) {
+                return Error.Write;
+            }
+            try s.buf.append(c);
+        }
+        try bw.flush(); // don't forget to flush!
+    }
+}
+
 fn testMe0(in: std.fs.File) !void {
     var c: u8 = undefined;
     c = try in.reader().readByte();
@@ -149,28 +231,33 @@ fn testMe(in: std.fs.File, out: std.fs.File) !void {
 }
 
 pub fn main() !void {
+    //allocator
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    //stdout
     const stdout = std.io.getStdOut();
     const stdout_file = stdout.writer();
     var bw = std.io.bufferedWriter(stdout_file);
     const stdout_writer = bw.writer();
+    //stdin
     const stdin = std.io.getStdIn(); //.reader();
     try enableRawMode(os.STDIN_FILENO);
 
     try stdout_writer.print("Line User Interface :) ", .{});
     try bw.flush(); // don't forget to flush!
 
-    try getLine(stdin, stdout);
-    //try testMe0(stdin);
-    //try testMe(stdin, stdout);
-    //var buf: [1]u8 = undefined;
-    //const read = try stdin.read(&buf);
-    //if (read < 1) {
-    //    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-    //}
-    //try stdout.print("char read: {c}", .{buf[0]});
+    // TODO: use a ctor and clean main
+    var state = LineState{
+        .in = stdin,
+        .out = stdout,
+        .buf = std.ArrayList(u8).init(allocator),
+    };
+    try readline(&state);
 
     try bw.flush(); // don't forget to flush!
     try disableRawMode(os.STDIN_FILENO);
+    std.debug.print("the line: `{s}'\n", .{state.buf.items});
 }
 
 pub fn main_() !void {
