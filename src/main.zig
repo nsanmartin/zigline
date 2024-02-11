@@ -6,6 +6,24 @@ const VMIN = 6; // TODO: where is this?
 const VTIME = 5; // TODO: where is this?
 var orig_termios: os.termios = undefined;
 
+const NoLine = enum {
+    Ctrl_d,
+    Ctrl_c,
+};
+
+const ReadType = enum { line, no_line };
+const Read = union(ReadType) {
+    line: []u8,
+    no_line: NoLine,
+};
+
+const InputType = enum { edit_more, read };
+
+const Input = union(InputType) {
+    edit_more: u8,
+    read: Read,
+};
+
 const Zigline = struct {
     // struct linenoiseState {
     //     int in_completion;  /* The user pressed TAB and we are now in completion
@@ -88,10 +106,20 @@ const Zigline = struct {
         }
     }
 
-    pub fn readline(self: *Zigline) !bool {
+    pub fn readline(self: *Zigline) !Read {
+        while (true) {
+            const read = try self.readInput();
+            switch (read) {
+                .edit_more => continue,
+                .read => |r| return r,
+            }
+        }
+    }
+
+    pub fn readInput(self: *Zigline) !Input {
         var bw = std.io.bufferedWriter(self.out.writer());
         const stdout_writer = bw.writer();
-        var res = true;
+        var res: Input = Input{ .edit_more = 0 };
         const c: u8 = try self.readchar();
 
         switch (c) {
@@ -104,7 +132,8 @@ const Zigline = struct {
                 }
             },
             @intFromEnum(KeyAction.CTRL_D) => {
-                res = false;
+                //res = Input.read.no_line.Ctrl_d;
+                res = Input{ .read = Read{ .no_line = NoLine.Ctrl_d } };
             },
             @intFromEnum(KeyAction.BACKSPACE) => {
                 try self.editBackspace();
@@ -238,7 +267,13 @@ pub fn main() !void {
     try bw.flush(); // don't forget to flush!
 
     var zigline = try Zigline.init(stdin, stdout, allocator);
-    while (try zigline.readline()) {}
+    while (true) {
+        const read = try zigline.readline();
+        switch (read) {
+            .line => continue,
+            .no_line => break,
+        }
+    }
 
     try zigline.deinit();
 
