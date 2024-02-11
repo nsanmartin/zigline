@@ -29,15 +29,15 @@ const Zigline = struct {
     //     int in_completion;  /* The user pressed TAB and we are now in completion
     //                          * mode, so input is handled by completeLine(). */
     //     size_t completion_idx; /* Index of next completion to propose. */
-    //     int ifd;            /* Terminal stdin file descriptor. */
-    //     int ofd;            /* Terminal stdout file descriptor. */
-    //     char *buf;          /* Edited line buffer. */
-    //     size_t buflen;      /* Edited line buffer size. */
+    //-----int ifd;            /* Terminal stdin file descriptor. */
+    //-----int ofd;            /* Terminal stdout file descriptor. */
+    //-----char *buf;          /* Edited line buffer. */
+    //-----size_t buflen;      /* Edited line buffer size. */
     //     const char *prompt; /* Prompt to display. */
     //     size_t plen;        /* Prompt length. */
-    //     size_t pos;         /* Current cursor position. */
+    //-----pos;         /* Current cursor position. */
     //     size_t oldpos;      /* Previous refresh cursor position. */
-    //     size_t len;         /* Current edited line length. */
+    //-----len;         /* Current edited line length. */
     //     size_t cols;        /* Number of columns in terminal. */
     //     size_t oldrows;     /* Rows used by last refrehsed line (multiline mode) */
     //     int history_index;  /* The history index we are currently editing. */
@@ -124,17 +124,18 @@ const Zigline = struct {
 
         switch (c) {
             @intFromEnum(KeyAction.ENTER) => {
+                const resline = try self.alloc.dupe(u8, self.lbuf.items);
+                res = Input{ .read = Read{ .line = resline } };
                 if (self.lbuf.items.len > 0) {
-                    const tmp: []const u8 = self.lbuf.items;
-                    try self.hist.append(tmp);
-                    self.lbuf = std.ArrayList(u8).init(self.alloc);
+                    //const tmp: []const u8 = self.lbuf.items;
+                    //try self.hist.append(tmp);
+                    //self.lbuf = std.ArrayList(u8).init(self.alloc);
+                    self.lbuf.clearRetainingCapacity();
                     self.pos = 0;
                 }
             },
-            @intFromEnum(KeyAction.CTRL_D) => {
-                //res = Input.read.no_line.Ctrl_d;
-                res = Input{ .read = Read{ .no_line = NoLine.Ctrl_d } };
-            },
+            @intFromEnum(KeyAction.CTRL_D) => res = Input{ .read = Read{ .no_line = NoLine.Ctrl_d } },
+            @intFromEnum(KeyAction.CTRL_C) => res = Input{ .read = Read{ .no_line = NoLine.Ctrl_c } },
             @intFromEnum(KeyAction.BACKSPACE) => {
                 try self.editBackspace();
             },
@@ -178,18 +179,15 @@ const Zigline = struct {
                     else => {},
                 }
             },
-            else => {
-                //cbuf[0] = c;
-                //const written = try stdout_writer.write(&cbuf);
-                //if (written <= 0) {
-                //    return Error.Write;
-                //}
-                try self.editInsert(c);
-            },
+            else => try self.editInsert(c),
         }
         try self.refreshLine(stdout_writer);
         try bw.flush(); // don't forget to flush!
         return res;
+    }
+
+    pub fn addHistory(self: *Zigline, line: []u8) !void {
+        try self.hist.append(line);
     }
 };
 
@@ -263,14 +261,18 @@ pub fn main() !void {
     //stdin
     const stdin = std.io.getStdIn(); //.reader();
 
-    try stdout_writer.print("Line User Interface :) Exit with C-d\n", .{});
+    try stdout_writer.print("Zigline :) Exit with C-c\n", .{});
     try bw.flush(); // don't forget to flush!
 
     var zigline = try Zigline.init(stdin, stdout, allocator);
     while (true) {
         const read = try zigline.readline();
         switch (read) {
-            .line => continue,
+            .line => |ln| {
+                if (ln.len > 0) {
+                    try zigline.addHistory(ln);
+                }
+            },
             .no_line => break,
         }
     }
