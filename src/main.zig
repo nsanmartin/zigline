@@ -51,17 +51,21 @@ const Zigline = struct {
             .lbuf = std.ArrayList(u8).init(allocator),
             .hist = std.ArrayList([]const u8).init(allocator),
             .pos = 0,
+            .rawmode = true,
         };
-        var bw = std.io.bufferedWriter(out.writer());
-        const stdout_writer = bw.writer();
-        try enableRawMode(os.STDIN_FILENO);
-        try res.refreshLine(stdout_writer);
+        //var bw = std.io.bufferedWriter(out.writer());
+        //const stdout_writer = bw.writer();
+        //try res.refreshLine(stdout_writer);
+        try res.enableRawMode();
         return res;
     }
 
     pub fn deinit(self: *Zigline) !void {
         _ = &self;
-        try disableRawMode(os.STDIN_FILENO);
+        for (self.hist.items) |ln| self.alloc.free(ln);
+        self.hist.deinit();
+        self.lbuf.deinit();
+        try self.disableRawMode();
     }
 
     in: std.fs.File,
@@ -70,6 +74,7 @@ const Zigline = struct {
     lbuf: std.ArrayList(u8),
     hist: std.ArrayList([]const u8),
     pos: usize,
+    rawmode: bool,
 
     fn readchar(self: *Zigline) !u8 {
         var cbuf: [1]u8 = undefined;
@@ -127,9 +132,6 @@ const Zigline = struct {
                 const resline = try self.alloc.dupe(u8, self.lbuf.items);
                 res = Input{ .read = Read{ .line = resline } };
                 if (self.lbuf.items.len > 0) {
-                    //const tmp: []const u8 = self.lbuf.items;
-                    //try self.hist.append(tmp);
-                    //self.lbuf = std.ArrayList(u8).init(self.alloc);
                     self.lbuf.clearRetainingCapacity();
                     self.pos = 0;
                 }
@@ -189,6 +191,20 @@ const Zigline = struct {
     pub fn addHistory(self: *Zigline, line: []u8) !void {
         try self.hist.append(line);
     }
+
+    pub fn enableRawMode(self: *Zigline) !void {
+        //obtain fd from out file
+        try _enableRawMode(os.STDIN_FILENO);
+        self.rawmode = true;
+    }
+
+    pub fn disableRawMode(self: *Zigline) !void {
+        if (self.rawmode) {
+            //obtain fd from out file
+            try os.tcsetattr(os.STDIN_FILENO, os.TCSA.FLUSH, orig_termios);
+            self.rawmode = false;
+        }
+    }
 };
 
 const KeyAction = enum(u8) {
@@ -213,11 +229,7 @@ const KeyAction = enum(u8) {
     BACKSPACE = 127, // Backspace
 };
 
-fn disableRawMode(fd: i32) !void {
-    try os.tcsetattr(fd, os.TCSA.FLUSH, orig_termios);
-}
-
-fn enableRawMode(fd: i32) !void {
+fn _enableRawMode(fd: i32) !void {
     var raw: os.termios = undefined;
 
     if (!os.isatty(os.STDIN_FILENO)) { //TODO: raise
@@ -271,15 +283,17 @@ pub fn main() !void {
             .line => |ln| {
                 if (ln.len > 0) {
                     try zigline.addHistory(ln);
+                } else {
+                    zigline.alloc.free(ln);
                 }
             },
             .no_line => break,
         }
     }
 
-    try zigline.deinit();
-
+    try zigline.disableRawMode();
     for (zigline.hist.items, 1..) |ln, i| {
         std.debug.print("line {d}: `{s}'\n", .{ i, ln });
     }
+    try zigline.deinit();
 }
