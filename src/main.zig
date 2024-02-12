@@ -291,19 +291,18 @@ const Zigline = struct {
                     'f' => {
                         break :esc_blk Cmd.forward_word;
                     },
+                    'b' => {
+                        break :esc_blk Cmd.backward_word;
+                    },
                     '[' => { // 91
                         const s1 = try self.readchar();
                         switch (s1) {
-                            '0'...'9' => {
+                            '3' => { // 51
                                 const s2 = try self.readchar();
                                 if (s2 == '~') {
-                                    switch (s1) {
-                                        '3' => {
-                                            break :esc_blk Cmd.delete_char;
-                                        },
-                                        else => break :esc_blk Error.NotImpl,
-                                    }
+                                    break :esc_blk Cmd.delete_char;
                                 }
+                                break :esc_blk Error.NotImpl;
                             },
                             'A' => {
                                 break :esc_blk Cmd.previous_history;
@@ -350,7 +349,21 @@ const Zigline = struct {
                 Cmd.backward_delete_char => try self.backwardDeleteChar(),
                 Cmd.backward_kill_line => Error.NotImpl,
                 Cmd.backward_kill_word => Error.NotImpl,
-                Cmd.backward_word => Error.NotImpl,
+                Cmd.backward_word => {
+                    const l = self.lbuf.items.len;
+                    if (l > 0) {
+                        if (self.pos >= self.lbuf.items.len) {
+                            self.pos -= 1;
+                        }
+                        while (self.pos > 0 and self.lbuf.items[self.pos] == ' ') {
+                            self.pos -= 1;
+                        }
+                        while (self.pos > 0 and self.lbuf.items[self.pos] != ' ') {
+                            self.pos -= 1;
+                        }
+                    }
+                    break :blk edit_more;
+                },
                 Cmd.beginning_of_history => Error.NotImpl,
                 Cmd.beginning_of_line => {
                     self.pos = 0;
