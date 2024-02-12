@@ -6,9 +6,106 @@ const VMIN = 6; // TODO: where is this?
 const VTIME = 5; // TODO: where is this?
 var orig_termios: os.termios = undefined;
 
+const Cmd = enum {
+    abort, //(C_g)
+    accept_line, //(Newline or Return)
+    backward_char, //(C_b)
+    backward_delete_char, //(Rubout)
+    backward_kill_line, //(C_x Rubout)
+    backward_kill_word, //(M_DEL)
+    backward_word, //(M_b)
+    beginning_of_history, //(M_<)
+    beginning_of_line, //(C_a)
+    bracketed_paste_begin, //()
+    call_last_kbd_macro, //(C_x e)
+    capitalize_word, //(M_c)
+    character_search, //(C_])
+    character_search_backward, //(M_C_])
+    clear_display, //(M_C_l)
+    clear_screen, //(C_l)
+    complete, //(TAB)
+    copy_backward_word, //()
+    copy_forward_word, //()
+    copy_region_as_kill, //()
+    delete_char, //(C_d)
+    delete_char_or_list, //()
+    delete_horizontal_space, //()
+    digit_argument, //(M_0, M_1, … M__)
+    do_lowercase_version, //(M_A, M_B, M_x, …)
+    downcase_word, //(M_l)
+    dump_functions, //()
+    dump_macros, //()
+    dump_variables, //()
+    emacs_editing_mode, //(C_e)
+    end_kbd_macro, //(C_x ))
+    end_of_file, //(usually C_d)
+    end_of_history, //(M_>)
+    end_of_line, //(C_e)
+    exchange_point_and_mark, //(C_x C_x)
+    fetch_history, //()
+    forward_backward_delete_char, //()
+    forward_char, //(C_f)
+    forward_search_history, //(C_s)
+    forward_word, //(M_f)
+    history_search_backward, //()
+    history_search_forward, //()
+    history_substring_search_backward, //()
+    history_substring_search_forward, //()
+    insert_comment, //(M_#)
+    insert_completions, //(M_*)
+    kill_line, //(C_k)
+    kill_region, //()
+    kill_whole_line, //()
+    kill_word, //(M_d)
+    menu_complete, //()
+    menu_complete_backward, //()
+    next_history, //(C_n)
+    next_screen_line, //()
+    non_incremental_forward_search_history, //(M_n)
+    non_incremental_reverse_search_history, //(M_p)
+    operate_and_get_next, //(C_o)
+    overwrite_mode, //()
+    possible_completions, //(M_?)
+    prefix_meta, //(ESC)
+    previous_history, //(C_p)
+    previous_screen_line, //()
+    print_last_kbd_macro, //()
+    quoted_insert, //(C_q or C_v)
+    re_read_init_file, //(C_x C_r)
+    redraw_current_line, //()
+    reverse_search_history, //(C_r)
+    revert_line, //(M_r)
+    self_insert, //(a, b, A, 1, !, …)
+    set_mark, //(C_@)
+    shell_transpose_words, //(M_C_t)
+    skip_csi_sequence, //()
+    start_kbd_macro, //(C_x ()
+    tab_insert, //(M_TAB)
+    tilde_expand, //(M_~)
+    transpose_chars, //(C_t)
+    transpose_words, //(M_t)
+    undo, //(C__ or C_x C_u)
+    universal_argument, //()
+    unix_filename_rubout, //()
+    unix_line_discard, //(C_u)
+    unix_word_rubout, //(C_w)
+    upcase_word, //(M_u)
+    vi_editing_mode, //(M_C_j)
+    yank, //(C_y)
+    yank_last_arg, //(M_. or M__)
+    yank_nth_arg, //(M_C_y)
+    yank_pop, //(M_y)
+    ctrl_c, //C_c
+    no_op,
+};
+
+const ViMode = enum { insert, command };
+const EditingModeType = enum { vi, emacs };
+const EditingMode = union { vi: ViMode, emacs: u8 };
+
 const NoLine = enum {
-    Ctrl_d,
-    Ctrl_c,
+    CTRL_D,
+    CTRL_C,
 };
 
 const ReadType = enum { line, no_line };
@@ -23,6 +120,8 @@ const Input = union(InputType) {
     edit_more: u8,
     read: Read,
 };
+
+const edit_more = Input{ .edit_more = 0 };
 
 const Zigline = struct {
     // struct linenoiseState {
@@ -44,28 +143,23 @@ const Zigline = struct {
     // };
 
     pub fn init(in: std.fs.File, out: std.fs.File, allocator: std.mem.Allocator) !Zigline {
-        var res = Zigline{
+        return Zigline{
             .in = in,
             .out = out,
             .alloc = allocator,
             .lbuf = std.ArrayList(u8).init(allocator),
             .hist = std.ArrayList([]const u8).init(allocator),
             .pos = 0,
-            .rawmode = true,
+            .rawmode = false,
         };
-        //var bw = std.io.bufferedWriter(out.writer());
-        //const stdout_writer = bw.writer();
-        //try res.refreshLine(stdout_writer);
-        try res.enableRawMode();
-        return res;
     }
 
-    pub fn deinit(self: *Zigline) !void {
+    pub fn deinit(self: *Zigline) void {
         _ = &self;
         for (self.hist.items) |ln| self.alloc.free(ln);
         self.hist.deinit();
         self.lbuf.deinit();
-        try self.disableRawMode();
+        self.disableRawMode();
     }
 
     in: std.fs.File,
@@ -85,9 +179,17 @@ const Zigline = struct {
         return cbuf[0];
     }
 
-    fn editInsert(self: *Zigline, c: u8) !void {
+    fn selfInsert(self: *Zigline, c: u8) !Input {
+        var l = self.lbuf.items.len;
         try self.lbuf.append(c);
+        if (self.pos < l) {
+            while (self.pos < l) : (l -= 1) {
+                self.lbuf.items[l] = self.lbuf.items[l - 1];
+            }
+            self.lbuf.items[self.pos] = c;
+        }
         self.pos += 1;
+        return edit_more;
     }
 
     fn refreshLine(self: *Zigline, writer: anytype) !void {
@@ -99,7 +201,23 @@ const Zigline = struct {
         }
     }
 
-    fn editBackspace(self: *Zigline) !void {
+    fn deleteChar(self: *Zigline) !Input {
+        const l = self.lbuf.items.len;
+        if (l > 0 and self.pos < l) {
+            const from: usize = self.pos;
+            const to: usize = self.lbuf.items.len - 1;
+            for (from..to) |i| {
+                self.lbuf.items[i] = self.lbuf.items[i + 1];
+            }
+            _ = self.lbuf.pop();
+            if (self.pos > l) {
+                self.pos -= 1;
+            }
+        }
+        return edit_more;
+    }
+
+    fn backwardDeleteChar(self: *Zigline) !Input {
         if (self.pos > 0 and self.lbuf.items.len > 0) {
             const from: usize = self.pos - 1;
             const to: usize = self.lbuf.items.len - 1;
@@ -109,9 +227,31 @@ const Zigline = struct {
             _ = self.lbuf.pop();
             self.pos -= 1;
         }
+        return edit_more;
+    }
+
+    fn clearScreen(self: *Zigline, writer: anytype) !Input {
+        _ = &self;
+        const written = try writer.write("\x1b[H\x1b[2J");
+        if (written != 7) {
+            return Error.Write;
+        }
+        //try stdout_writer.write("\x1b[H\x1b[2J", 7);
+        return edit_more;
+    }
+
+    fn transposeChars(self: *Zigline) Input {
+        if (self.lbuf.items.len > 1 and self.pos > 0) {
+            const i = if (self.pos < self.lbuf.items.len) self.pos else self.pos - 1;
+            const tmp = self.lbuf.items[i - 1];
+            self.lbuf.items[i - 1] = self.lbuf.items[i];
+            self.lbuf.items[i] = tmp;
+        }
+        return edit_more;
     }
 
     pub fn readline(self: *Zigline) !Read {
+        try self.enableRawMode();
         while (true) {
             const read = try self.readInput();
             switch (read) {
@@ -121,71 +261,212 @@ const Zigline = struct {
         }
     }
 
-    pub fn readInput(self: *Zigline) !Input {
-        var bw = std.io.bufferedWriter(self.out.writer());
-        const stdout_writer = bw.writer();
-        var res: Input = Input{ .edit_more = 0 };
-        const c: u8 = try self.readchar();
+    // fn inputToCmdVi(self: *Zigline, mode: ViMode, c: u8) !Cmd { TODO
 
-        switch (c) {
-            @intFromEnum(KeyAction.ENTER) => {
-                const resline = try self.alloc.dupe(u8, self.lbuf.items);
-                res = Input{ .read = Read{ .line = resline } };
-                if (self.lbuf.items.len > 0) {
-                    self.lbuf.clearRetainingCapacity();
-                    self.pos = 0;
-                }
-            },
-            @intFromEnum(KeyAction.CTRL_D) => res = Input{ .read = Read{ .no_line = NoLine.Ctrl_d } },
-            @intFromEnum(KeyAction.CTRL_C) => res = Input{ .read = Read{ .no_line = NoLine.Ctrl_c } },
-            @intFromEnum(KeyAction.BACKSPACE) => {
-                try self.editBackspace();
-            },
-            @intFromEnum(KeyAction.CTRL_A) => try stdout_writer.print("Ctrl A", .{}),
-            @intFromEnum(KeyAction.CTRL_E) => try stdout_writer.print("Ctrl E", .{}),
-            @intFromEnum(KeyAction.ESC) => {
+    fn keyActionToCmdEmacs(self: *Zigline, c: u8) !Cmd {
+        return switch (c) {
+            @intFromEnum(KeyAction.BACKSPACE) => Cmd.backward_delete_char,
+            @intFromEnum(KeyAction.CTRL_A) => Cmd.beginning_of_line,
+            @intFromEnum(KeyAction.CTRL_B) => Cmd.backward_char,
+            @intFromEnum(KeyAction.CTRL_C) => Cmd.ctrl_c,
+            @intFromEnum(KeyAction.CTRL_D) => if (self.lbuf.items.len == 0) Cmd.end_of_file else Cmd.delete_char,
+            @intFromEnum(KeyAction.CTRL_E) => Cmd.end_of_line,
+            @intFromEnum(KeyAction.CTRL_F) => Cmd.forward_char,
+            @intFromEnum(KeyAction.CTRL_H) => Cmd.backward_delete_char,
+            //@intFromEnum(KeyAction.TAB) => ,
+            @intFromEnum(KeyAction.CTRL_K) => Cmd.kill_line,
+            @intFromEnum(KeyAction.CTRL_L) => Cmd.clear_screen,
+            @intFromEnum(KeyAction.ENTER) => Cmd.accept_line,
+            @intFromEnum(KeyAction.CTRL_N) => Cmd.next_history,
+            @intFromEnum(KeyAction.CTRL_P) => Cmd.previous_history,
+            @intFromEnum(KeyAction.CTRL_T) => Cmd.transpose_chars,
+            @intFromEnum(KeyAction.CTRL_U) => Cmd.unix_line_discard,
+            @intFromEnum(KeyAction.CTRL_W) => Cmd.unix_word_rubout,
+            @intFromEnum(KeyAction.ESC) => esc_blk: {
                 const s0 = try self.readchar();
-                const s1 = try self.readchar();
                 switch (s0) {
-                    '[' => {
+                    @intFromEnum(KeyAction.ESC) => {
+                        break :esc_blk Cmd.no_op;
+                    },
+                    'f' => {
+                        break :esc_blk Cmd.forward_word;
+                    },
+                    '[' => { // 91
+                        const s1 = try self.readchar();
                         switch (s1) {
                             '0'...'9' => {
                                 const s2 = try self.readchar();
                                 if (s2 == '~') {
                                     switch (s1) {
-                                        '3' => try stdout_writer.print("Del", .{}),
-                                        else => try stdout_writer.print("`Esc[N?~`", .{}),
+                                        '3' => {
+                                            break :esc_blk Cmd.delete_char;
+                                        },
+                                        else => break :esc_blk Error.NotImpl,
                                     }
                                 }
                             },
-                            else => {
-                                switch (s1) {
-                                    'A' => try stdout_writer.print("Up", .{}),
-                                    'B' => try stdout_writer.print("Down", .{}),
-                                    'C' => try stdout_writer.print("Right", .{}),
-                                    'D' => try stdout_writer.print("Left", .{}),
-                                    'H' => try stdout_writer.print("Home", .{}), //TODO: check
-                                    'F' => try stdout_writer.print("End", .{}), //TODO: check
-                                    else => try stdout_writer.print("`Esc[?`", .{}),
-                                }
+                            'A' => {
+                                break :esc_blk Cmd.previous_history;
                             },
+                            'B' => {
+                                break :esc_blk Cmd.next_history;
+                            },
+                            'C' => {
+                                break :esc_blk Cmd.forward_char;
+                            },
+                            'D' => {
+                                break :esc_blk Cmd.backward_char;
+                            },
+                            else => break :esc_blk Error.NotImpl,
                         }
                     },
-                    'O' => {
-                        switch (s1) {
-                            'H' => try stdout_writer.print("Home", .{}),
-                            'F' => try stdout_writer.print("End", .{}),
-                            else => try stdout_writer.print("`EscO?`", .{}),
-                        }
-                    },
-                    else => {},
+                    else => break :esc_blk Error.NotImpl,
                 }
+                break :esc_blk Error.NotImpl;
             },
-            else => try self.editInsert(c),
-        }
+            else => Cmd.self_insert,
+        };
+    }
+
+    pub fn readCmd(self: *Zigline, cmd: Cmd, c: u8) !Input {
+        const lblen = self.lbuf.items.len;
+        const res = blk: {
+            break :blk switch (cmd) {
+                Cmd.abort => Error.NotImpl,
+                Cmd.accept_line => {
+                    const line = try self.alloc.dupe(u8, self.lbuf.items);
+                    if (lblen > 0) {
+                        self.lbuf.clearRetainingCapacity();
+                        self.pos = 0;
+                    }
+                    break :blk Input{ .read = Read{ .line = line } };
+                },
+                Cmd.backward_char => {
+                    if (self.pos > 0) {
+                        self.pos -= 1;
+                    }
+                    break :blk edit_more;
+                },
+                Cmd.backward_delete_char => try self.backwardDeleteChar(),
+                Cmd.backward_kill_line => Error.NotImpl,
+                Cmd.backward_kill_word => Error.NotImpl,
+                Cmd.backward_word => Error.NotImpl,
+                Cmd.beginning_of_history => Error.NotImpl,
+                Cmd.beginning_of_line => {
+                    self.pos = 0;
+                    break :blk edit_more;
+                },
+                Cmd.bracketed_paste_begin => Error.NotImpl,
+                Cmd.call_last_kbd_macro => Error.NotImpl,
+                Cmd.capitalize_word => Error.NotImpl,
+                Cmd.character_search => Error.NotImpl,
+                Cmd.character_search_backward => Error.NotImpl,
+                Cmd.clear_display => Error.NotImpl,
+                Cmd.clear_screen => Error.NotImpl, //try self.clearScreen(),
+                Cmd.complete => Error.NotImpl,
+                Cmd.copy_backward_word => Error.NotImpl,
+                Cmd.copy_forward_word => Error.NotImpl,
+                Cmd.copy_region_as_kill => Error.NotImpl,
+                Cmd.delete_char => try self.deleteChar(),
+                Cmd.delete_char_or_list => Error.NotImpl,
+                Cmd.delete_horizontal_space => Error.NotImpl,
+                Cmd.digit_argument => Error.NotImpl,
+                Cmd.do_lowercase_version => Error.NotImpl,
+                Cmd.downcase_word => Error.NotImpl,
+                Cmd.dump_functions => Error.NotImpl,
+                Cmd.dump_macros => Error.NotImpl,
+                Cmd.dump_variables => Error.NotImpl,
+                Cmd.emacs_editing_mode => Error.NotImpl,
+                Cmd.end_kbd_macro => Error.NotImpl,
+                Cmd.end_of_file => Input{ .read = Read{ .no_line = NoLine.CTRL_D } },
+                Cmd.end_of_history => Error.NotImpl,
+                Cmd.end_of_line => {
+                    self.pos = lblen;
+                    break :blk edit_more;
+                },
+                Cmd.exchange_point_and_mark => Error.NotImpl,
+                Cmd.fetch_history => Error.NotImpl,
+                Cmd.forward_backward_delete_char => Error.NotImpl,
+                Cmd.forward_char => {
+                    self.pos = if (self.pos < lblen) self.pos +| 1 else lblen;
+                    break :blk edit_more;
+                },
+                Cmd.forward_search_history => Error.NotImpl,
+                Cmd.forward_word => {
+                    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] == ' ') {
+                        self.pos += 1;
+                    }
+                    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] != ' ') {
+                        self.pos += 1;
+                    }
+                    break :blk edit_more;
+                },
+                Cmd.history_search_backward => Error.NotImpl,
+                Cmd.history_search_forward => Error.NotImpl,
+                Cmd.history_substring_search_backward => Error.NotImpl,
+                Cmd.history_substring_search_forward => Error.NotImpl,
+                Cmd.insert_comment => Error.NotImpl,
+                Cmd.insert_completions => Error.NotImpl,
+                Cmd.kill_line => Error.NotImpl,
+                Cmd.kill_region => Error.NotImpl,
+                Cmd.kill_whole_line => Error.NotImpl,
+                Cmd.kill_word => Error.NotImpl,
+                Cmd.menu_complete => Error.NotImpl,
+                Cmd.menu_complete_backward => Error.NotImpl,
+                Cmd.next_history => Error.NotImpl,
+                Cmd.next_screen_line => Error.NotImpl,
+                Cmd.non_incremental_forward_search_history => Error.NotImpl,
+                Cmd.non_incremental_reverse_search_history => Error.NotImpl,
+                Cmd.operate_and_get_next => Error.NotImpl,
+                Cmd.overwrite_mode => Error.NotImpl,
+                Cmd.possible_completions => Error.NotImpl,
+                Cmd.prefix_meta => Error.NotImpl,
+                Cmd.previous_history => Error.NotImpl,
+                Cmd.previous_screen_line => Error.NotImpl,
+                Cmd.print_last_kbd_macro => Error.NotImpl,
+                Cmd.quoted_insert => Error.NotImpl,
+                Cmd.re_read_init_file => Error.NotImpl,
+                Cmd.redraw_current_line => Error.NotImpl,
+                Cmd.reverse_search_history => Error.NotImpl,
+                Cmd.revert_line => Error.NotImpl,
+                Cmd.self_insert => try self.selfInsert(c),
+                Cmd.set_mark => Error.NotImpl,
+                Cmd.shell_transpose_words => Error.NotImpl,
+                Cmd.skip_csi_sequence => Error.NotImpl,
+                Cmd.start_kbd_macro => Error.NotImpl,
+                Cmd.tab_insert => Error.NotImpl,
+                Cmd.tilde_expand => Error.NotImpl,
+                Cmd.transpose_chars => self.transposeChars(),
+                Cmd.transpose_words => Error.NotImpl,
+                Cmd.undo => Error.NotImpl,
+                Cmd.universal_argument => Error.NotImpl,
+                Cmd.unix_filename_rubout => Error.NotImpl,
+                Cmd.unix_line_discard => Error.NotImpl,
+                Cmd.unix_word_rubout => Error.NotImpl,
+                Cmd.upcase_word => Error.NotImpl,
+                Cmd.vi_editing_mode => Error.NotImpl,
+                Cmd.yank => Error.NotImpl,
+                Cmd.yank_last_arg => Error.NotImpl,
+                Cmd.yank_nth_arg => Error.NotImpl,
+                Cmd.yank_pop => Error.NotImpl,
+                Cmd.ctrl_c => Input{ .read = Read{ .no_line = NoLine.CTRL_C } },
+                Cmd.no_op => {
+                    break :blk edit_more;
+                },
+            };
+        };
+        return res;
+    }
+
+    pub fn readInput(self: *Zigline) !Input {
+        const c: u8 = try self.readchar();
+        const cmd = try self.keyActionToCmdEmacs(c);
+        const input = try self.readCmd(cmd, c);
+        var bw = std.io.bufferedWriter(self.out.writer());
+        const stdout_writer = bw.writer();
         try self.refreshLine(stdout_writer);
         try bw.flush(); // don't forget to flush!
-        return res;
+        return input;
     }
 
     pub fn addHistory(self: *Zigline, line: []u8) !void {
@@ -194,39 +475,54 @@ const Zigline = struct {
 
     pub fn enableRawMode(self: *Zigline) !void {
         //obtain fd from out file
-        try _enableRawMode(os.STDIN_FILENO);
-        self.rawmode = true;
+        if (!self.rawmode) {
+            try _enableRawMode(os.STDIN_FILENO);
+            self.rawmode = true;
+        }
     }
 
-    pub fn disableRawMode(self: *Zigline) !void {
+    pub fn disableRawMode(self: *Zigline) void {
         if (self.rawmode) {
-            //obtain fd from out file
-            try os.tcsetattr(os.STDIN_FILENO, os.TCSA.FLUSH, orig_termios);
-            self.rawmode = false;
+            //TODO: obtain fd from out file
+            const res = os.tcsetattr(os.STDIN_FILENO, os.TCSA.FLUSH, orig_termios);
+            if (res) {
+                self.rawmode = false;
+            } else |err| {
+                _ = &err;
+                std.debug.print("Error returned by tcssetattr", .{});
+            }
         }
     }
 };
 
 const KeyAction = enum(u8) {
-    KEY_NULL = 0, // NULL
-    CTRL_A = 1, // Ctrl+a
-    CTRL_B = 2, // Ctrl-b
-    CTRL_C = 3, // Ctrl-c
-    CTRL_D = 4, // Ctrl-d
-    CTRL_E = 5, // Ctrl-e
-    CTRL_F = 6, // Ctrl-f
-    CTRL_H = 8, // Ctrl-h
-    TAB = 9, // Tab
-    CTRL_K = 11, // Ctrl+k
-    CTRL_L = 12, // Ctrl+l
-    ENTER = 13, // Enter
-    CTRL_N = 14, // Ctrl-n
-    CTRL_P = 16, // Ctrl-p
-    CTRL_T = 20, // Ctrl-t
-    CTRL_U = 21, // Ctrl+u
-    CTRL_W = 23, // Ctrl+w
-    ESC = 27, // Escape
-    BACKSPACE = 127, // Backspace
+    KEY_NULL = 0,
+    CTRL_A = 1,
+    CTRL_B = 2,
+    CTRL_C = 3,
+    CTRL_D = 4,
+    CTRL_E = 5,
+    CTRL_F = 6,
+    CTRL_H = 8,
+    TAB = 9,
+    CTRL_J = 10,
+    CTRL_K = 11,
+    CTRL_L = 12,
+    ENTER = 13,
+    CTRL_N = 14,
+    CTRL_O = 15,
+    CTRL_P = 16,
+    CTRL_Q = 17,
+    CTRL_R = 18,
+    CTRL_S = 19,
+    CTRL_T = 20,
+    CTRL_U = 21,
+    CTRL_V = 22,
+    CTRL_W = 23,
+    CTRL_X = 24,
+    CTRL_Y = 25,
+    ESC = 27,
+    BACKSPACE = 127,
 };
 
 fn _enableRawMode(fd: i32) !void {
@@ -258,7 +554,7 @@ fn _enableRawMode(fd: i32) !void {
     try os.tcsetattr(fd, os.TCSA.FLUSH, raw);
 }
 
-const Error = error{ Read, Write };
+const Error = error{ Read, Write, NotImpl };
 
 pub fn main() !void {
     //allocator
@@ -277,6 +573,7 @@ pub fn main() !void {
     try bw.flush(); // don't forget to flush!
 
     var zigline = try Zigline.init(stdin, stdout, allocator);
+    defer zigline.deinit();
     while (true) {
         const read = try zigline.readline();
         switch (read) {
@@ -291,9 +588,8 @@ pub fn main() !void {
         }
     }
 
-    try zigline.disableRawMode();
+    zigline.disableRawMode();
     for (zigline.hist.items, 1..) |ln, i| {
         std.debug.print("line {d}: `{s}'\n", .{ i, ln });
     }
-    try zigline.deinit();
 }
