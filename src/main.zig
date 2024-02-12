@@ -252,6 +252,7 @@ const Zigline = struct {
 
     pub fn readline(self: *Zigline) !Read {
         try self.enableRawMode();
+        defer self.disableRawMode();
         while (true) {
             const read = try self.readInput();
             switch (read) {
@@ -569,6 +570,7 @@ pub fn main() !void {
         switch (read) {
             .line => |ln| {
                 if (ln.len > 0) {
+                    std.debug.print("{s}\n", .{ln});
                     try zigline.addHistory(ln);
                 } else {
                     zigline.alloc.free(ln);
@@ -578,7 +580,6 @@ pub fn main() !void {
         }
     }
 
-    zigline.disableRawMode();
     for (zigline.hist.items, 1..) |ln, i| {
         std.debug.print("line {d}: `{s}'\n", .{ i, ln });
     }
