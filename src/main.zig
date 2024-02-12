@@ -282,46 +282,24 @@ const Zigline = struct {
             @intFromEnum(KeyAction.CTRL_T) => Cmd.transpose_chars,
             @intFromEnum(KeyAction.CTRL_U) => Cmd.unix_line_discard,
             @intFromEnum(KeyAction.CTRL_W) => Cmd.unix_word_rubout,
-            @intFromEnum(KeyAction.ESC) => esc_blk: {
-                const s0 = try self.readchar();
-                switch (s0) {
-                    @intFromEnum(KeyAction.ESC) => {
-                        break :esc_blk Cmd.no_op;
+            @intFromEnum(KeyAction.ESC) => switch (try self.readchar()) {
+                @intFromEnum(KeyAction.ESC) => Cmd.no_op,
+                'f', 'F' => Cmd.forward_word,
+                'b', 'B' => Cmd.backward_word,
+                // 91
+                '[' => switch (try self.readchar()) {
+                    // 51
+                    '3' => switch (try self.readchar()) {
+                        '~' => Cmd.delete_char,
+                        else => Error.NotImpl,
                     },
-                    'f' => {
-                        break :esc_blk Cmd.forward_word;
-                    },
-                    'b' => {
-                        break :esc_blk Cmd.backward_word;
-                    },
-                    '[' => { // 91
-                        const s1 = try self.readchar();
-                        switch (s1) {
-                            '3' => { // 51
-                                const s2 = try self.readchar();
-                                if (s2 == '~') {
-                                    break :esc_blk Cmd.delete_char;
-                                }
-                                break :esc_blk Error.NotImpl;
-                            },
-                            'A' => {
-                                break :esc_blk Cmd.previous_history;
-                            },
-                            'B' => {
-                                break :esc_blk Cmd.next_history;
-                            },
-                            'C' => {
-                                break :esc_blk Cmd.forward_char;
-                            },
-                            'D' => {
-                                break :esc_blk Cmd.backward_char;
-                            },
-                            else => break :esc_blk Error.NotImpl,
-                        }
-                    },
-                    else => break :esc_blk Error.NotImpl,
-                }
-                break :esc_blk Error.NotImpl;
+                    'A' => Cmd.previous_history,
+                    'B' => Cmd.next_history,
+                    'C' => Cmd.forward_char,
+                    'D' => Cmd.backward_char,
+                    else => Error.NotImpl,
+                },
+                else => Error.NotImpl,
             },
             else => Cmd.self_insert,
         };
@@ -329,7 +307,7 @@ const Zigline = struct {
 
     pub fn readCmd(self: *Zigline, cmd: Cmd, c: u8) !Input {
         const lblen = self.lbuf.items.len;
-        const res = blk: {
+        return blk: {
             break :blk switch (cmd) {
                 Cmd.abort => Error.NotImpl,
                 Cmd.accept_line => {
@@ -468,7 +446,6 @@ const Zigline = struct {
                 },
             };
         };
-        return res;
     }
 
     pub fn readInput(self: *Zigline) !Input {
