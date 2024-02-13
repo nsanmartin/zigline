@@ -105,7 +105,7 @@ const EditingMode = union { vi: ViMode, emacs: u8 };
 
 const NoLine = enum {
     CTRL_D,
-    CTRL_C,
+    CTRL_C, //TODO: attach line?
 };
 
 const ReadType = enum { line, no_line };
@@ -254,6 +254,35 @@ const Zigline = struct {
         return edit_more;
     }
 
+    fn nextHistory(self: *Zigline) !Input {
+        if (self.histix > 0) {
+            if (self.histix == 1) {
+                self.lbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.tmpbuf.toOwnedSlice());
+            } else {
+                self.lbuf.clearRetainingCapacity();
+                try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - self.histix + 1]);
+            }
+            self.histix -= 1;
+            self.pos = self.lbuf.items.len;
+        }
+        return edit_more;
+    }
+
+    fn previousHistory(self: *Zigline) !Input {
+        const hlen = self.hist.items.len;
+        if (hlen > 0 and self.histix < hlen) {
+            if (self.histix == 0) {
+                self.tmpbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.lbuf.toOwnedSlice());
+            } else {
+                self.lbuf.clearRetainingCapacity();
+            }
+            try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - 1 - self.histix]);
+            self.histix = self.histix + 1;
+            self.pos = self.lbuf.items.len;
+        }
+        return edit_more;
+    }
+
     pub fn readline(self: *Zigline) !Read {
         try self.enableRawMode();
         defer self.disableRawMode();
@@ -261,11 +290,20 @@ const Zigline = struct {
             const read = try self.readInput();
             switch (read) {
                 .edit_more => continue,
-                .read => |r| return r,
+                .read => |r| {
+                    self.tmpbuf.clearRetainingCapacity();
+                    return r;
+                },
             }
         }
     }
 
+    fn resetLbuf(self: *Zigline) void {
+        if (self.lbuf.items.len > 0) {
+            self.lbuf.clearRetainingCapacity();
+            self.pos = 0;
+        }
+    }
     // fn inputToCmdVi(self: *Zigline, mode: ViMode, c: u8) !Cmd { TODO
 
     fn keyActionToCmdEmacs(self: *Zigline, c: u8) !Cmd {
@@ -317,10 +355,8 @@ const Zigline = struct {
                 Cmd.abort => Error.NotImpl,
                 Cmd.accept_line => {
                     const line = try self.alloc.dupe(u8, self.lbuf.items);
-                    if (lblen > 0) {
-                        self.lbuf.clearRetainingCapacity();
-                        self.pos = 0;
-                    }
+                    self.resetLbuf();
+                    //const line = try self.lbuf.toOwnedSlice();
                     break :blk Input{ .read = Read{ .line = line } };
                 },
                 Cmd.backward_char => {
@@ -409,19 +445,7 @@ const Zigline = struct {
                 Cmd.kill_word => Error.NotImpl,
                 Cmd.menu_complete => Error.NotImpl,
                 Cmd.menu_complete_backward => Error.NotImpl,
-                Cmd.next_history => {
-                    if (self.histix > 0) {
-                        if (self.histix == 1) {
-                            self.lbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.tmpbuf.toOwnedSlice());
-                        } else {
-                            self.lbuf.clearRetainingCapacity();
-                            try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - self.histix + 1]);
-                        }
-                        self.histix -= 1;
-                        self.pos = self.lbuf.items.len;
-                    }
-                    break :blk edit_more;
-                },
+                Cmd.next_history => self.nextHistory(),
                 Cmd.next_screen_line => Error.NotImpl,
                 Cmd.non_incremental_forward_search_history => Error.NotImpl,
                 Cmd.non_incremental_reverse_search_history => Error.NotImpl,
@@ -429,19 +453,7 @@ const Zigline = struct {
                 Cmd.overwrite_mode => Error.NotImpl,
                 Cmd.possible_completions => Error.NotImpl,
                 Cmd.prefix_meta => Error.NotImpl,
-                Cmd.previous_history => {
-                    const hlen = self.hist.items.len;
-                    if (hlen > 0 and self.histix < hlen) {
-                        if (self.histix == 0) {
-                            self.tmpbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.lbuf.toOwnedSlice());
-                        }
-                        self.lbuf.clearRetainingCapacity();
-                        try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - 1 - self.histix]);
-                        self.histix = self.histix +| 1;
-                        self.pos = self.lbuf.items.len;
-                    }
-                    break :blk edit_more;
-                },
+                Cmd.previous_history => self.previousHistory(),
                 Cmd.previous_screen_line => Error.NotImpl,
                 Cmd.print_last_kbd_macro => Error.NotImpl,
                 Cmd.quoted_insert => Error.NotImpl,
@@ -469,7 +481,10 @@ const Zigline = struct {
                 Cmd.yank_last_arg => Error.NotImpl,
                 Cmd.yank_nth_arg => Error.NotImpl,
                 Cmd.yank_pop => Error.NotImpl,
-                Cmd.ctrl_c => Input{ .read = Read{ .no_line = NoLine.CTRL_C } },
+                Cmd.ctrl_c => {
+                    self.resetLbuf();
+                    break :blk Input{ .read = Read{ .no_line = NoLine.CTRL_C } };
+                },
                 Cmd.no_op => {
                     break :blk edit_more;
                 },
@@ -485,7 +500,6 @@ const Zigline = struct {
         const stdout_writer = bw.writer();
         try self.refreshLine(stdout_writer);
         try bw.flush(); // don't forget to flush!
-        self.tmpbuf.clearRetainingCapacity();
         return input;
     }
 
