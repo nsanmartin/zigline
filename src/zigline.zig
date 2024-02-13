@@ -154,6 +154,7 @@ pub const Zigline = struct {
             .pos = 0,
             .rawmode = false,
             .kill_ring = std.ArrayList([]const u8).init(allocator),
+            .kill_ring_ix = 0,
         };
     }
 
@@ -175,6 +176,7 @@ pub const Zigline = struct {
     pos: usize,
     rawmode: bool,
     kill_ring: std.ArrayList([]const u8),
+    kill_ring_ix: usize,
 
     fn readchar(self: *Zigline) !u8 {
         var cbuf: [1]u8 = undefined;
@@ -210,8 +212,8 @@ pub const Zigline = struct {
 
     fn backwardKillLine(self: *Zigline) !Input {
         if (self.pos > 0) {
-            const kill = self.lbuf.items[0..self.pos];
-            try self.kill_ring.append(kill);
+            const text = try self.alloc.dupe(u8, self.lbuf.items[0..self.pos]);
+            try self.kill_ring.append(text);
             for (self.pos..self.lbuf.items.len) |i| {
                 self.lbuf.items[i - self.pos] = self.lbuf.items[i];
             }
@@ -325,7 +327,14 @@ pub const Zigline = struct {
         return edit_more;
     }
 
-    //fn yank(self: *Zigline) !Input{ }
+    fn yank(self: *Zigline) !Input {
+        if (self.kill_ring.items.len > 0) {
+            const text = self.kill_ring.items[self.kill_ring.items.len - 1 - self.kill_ring_ix];
+            try self.lbuf.insertSlice(self.pos, text);
+        }
+        return edit_more;
+    }
+
     // End of Commands
 
     pub fn readline(self: *Zigline) !Read {
@@ -513,7 +522,7 @@ pub const Zigline = struct {
                 Cmd.unix_word_rubout => Error.NotImpl,
                 Cmd.upcase_word => Error.NotImpl,
                 Cmd.vi_editing_mode => Error.NotImpl,
-                Cmd.yank => Error.NotImpl, //self.yank(),
+                Cmd.yank => self.yank(),
                 Cmd.yank_last_arg => Error.NotImpl,
                 Cmd.yank_nth_arg => Error.NotImpl,
                 Cmd.yank_pop => Error.NotImpl,
