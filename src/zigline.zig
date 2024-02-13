@@ -2,6 +2,8 @@ const std = @import("std");
 const os = @import("std").os;
 const io = @import("std").io;
 
+const Error = error{ Read, Write, NotImpl };
+
 const VMIN = 6; // TODO: where is this?
 const VTIME = 5; // TODO: where is this?
 var orig_termios: os.termios = undefined;
@@ -103,13 +105,13 @@ const ViMode = enum { insert, command };
 const EditingModeType = enum { vi, emacs };
 const EditingMode = union { vi: ViMode, emacs: u8 };
 
-const NoLine = enum {
+pub const NoLine = enum {
     CTRL_D,
-    CTRL_C, //TODO: attach line?
+    CTRL_C, //TODO?: attach line
 };
 
 const ReadType = enum { line, no_line };
-const Read = union(ReadType) {
+pub const Read = union(ReadType) {
     line: []u8,
     no_line: NoLine,
 };
@@ -123,7 +125,7 @@ const Input = union(InputType) {
 
 const edit_more = Input{ .edit_more = 0 };
 
-const Zigline = struct {
+pub const Zigline = struct {
     // struct linenoiseState {
     //     int in_completion;  /* The user pressed TAB and we are now in completion
     //                          * mode, so input is handled by completeLine(). */
@@ -139,7 +141,7 @@ const Zigline = struct {
     //-----len;         /* Current edited line length. */
     //     size_t cols;        /* Number of columns in terminal. */
     //     size_t oldrows;     /* Rows used by last refrehsed line (multiline mode) */
-    //     int history_index;  /* The history index we are currently editing. */
+    //-----int history_index;  /* The history index we are currently editing. */
     // };
 
     pub fn init(in: std.fs.File, out: std.fs.File, allocator: std.mem.Allocator) !Zigline {
@@ -153,6 +155,7 @@ const Zigline = struct {
             .histix = 0,
             .pos = 0,
             .rawmode = false,
+            .kill_ring = std.ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -173,6 +176,7 @@ const Zigline = struct {
     histix: usize,
     pos: usize,
     rawmode: bool,
+    kill_ring: std.ArrayList([]const u8),
 
     fn readchar(self: *Zigline) !u8 {
         var cbuf: [1]u8 = undefined;
@@ -202,6 +206,19 @@ const Zigline = struct {
             }
             _ = self.lbuf.pop();
             self.pos -= 1;
+        }
+        return edit_more;
+    }
+
+    fn backwardKillLine(self: *Zigline) !Input {
+        if (self.pos > 0) {
+            const kill = self.lbuf.items[0..self.pos];
+            try self.kill_ring.append(kill);
+            for (self.pos..self.lbuf.items.len) |i| {
+                self.lbuf.items[i - self.pos] = self.lbuf.items[i];
+            }
+            self.lbuf.shrinkRetainingCapacity(self.lbuf.items.len - self.pos);
+            self.pos = 0;
         }
         return edit_more;
     }
@@ -310,6 +327,7 @@ const Zigline = struct {
         return edit_more;
     }
 
+    //fn yank(self: *Zigline) !Input{ }
     // End of Commands
 
     pub fn readline(self: *Zigline) !Read {
@@ -341,7 +359,7 @@ const Zigline = struct {
             self.pos = 0;
         }
     }
-    // fn inputToCmdVi(self: *Zigline, mode: ViMode, c: u8) !Cmd { TODO
+    // fn inputToCmdVi(self: *Zigline, mode: ViMode, c: u8) !Cmd { TODO!
 
     fn keyActionToCmdEmacs(self: *Zigline, c: u8) !Cmd {
         return switch (c) {
@@ -362,6 +380,12 @@ const Zigline = struct {
             @intFromEnum(KeyAction.CTRL_T) => Cmd.transpose_chars,
             @intFromEnum(KeyAction.CTRL_U) => Cmd.unix_line_discard,
             @intFromEnum(KeyAction.CTRL_W) => Cmd.unix_word_rubout,
+            @intFromEnum(KeyAction.CTRL_X) => switch (try self.readchar()) {
+                @intFromEnum(KeyAction.BACKSPACE) => Cmd.backward_kill_line,
+                @intFromEnum(KeyAction.CTRL_G) => Cmd.abort,
+                else => Error.NotImpl,
+            },
+            @intFromEnum(KeyAction.CTRL_Y) => Cmd.yank,
             @intFromEnum(KeyAction.ESC) => switch (try self.readchar()) {
                 @intFromEnum(KeyAction.ESC) => Cmd.no_op,
                 'f', 'F' => Cmd.forward_word,
@@ -389,7 +413,7 @@ const Zigline = struct {
         const lblen = self.lbuf.items.len;
         return blk: {
             break :blk switch (cmd) {
-                Cmd.abort => Error.NotImpl,
+                Cmd.abort => edit_more,
                 Cmd.accept_line => {
                     // lbuf need to be valid until refreshLine
                     const line = try self.alloc.dupe(u8, self.lbuf.items);
@@ -402,7 +426,7 @@ const Zigline = struct {
                     break :blk edit_more;
                 },
                 Cmd.backward_delete_char => try self.backwardDeleteChar(),
-                Cmd.backward_kill_line => Error.NotImpl,
+                Cmd.backward_kill_line => try self.backwardKillLine(),
                 Cmd.backward_kill_word => Error.NotImpl,
                 Cmd.backward_word => self.backwardWord(),
                 Cmd.beginning_of_history => Error.NotImpl,
@@ -447,15 +471,6 @@ const Zigline = struct {
                 },
                 Cmd.forward_search_history => Error.NotImpl,
                 Cmd.forward_word => self.forwardWord(),
-                //{
-                //    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] == ' ') {
-                //        self.pos += 1;
-                //    }
-                //    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] != ' ') {
-                //        self.pos += 1;
-                //    }
-                //    break :blk edit_more;
-                //},
                 Cmd.history_search_backward => Error.NotImpl,
                 Cmd.history_search_forward => Error.NotImpl,
                 Cmd.history_substring_search_backward => Error.NotImpl,
@@ -500,7 +515,7 @@ const Zigline = struct {
                 Cmd.unix_word_rubout => Error.NotImpl,
                 Cmd.upcase_word => Error.NotImpl,
                 Cmd.vi_editing_mode => Error.NotImpl,
-                Cmd.yank => Error.NotImpl,
+                Cmd.yank => Error.NotImpl, //self.yank(),
                 Cmd.yank_last_arg => Error.NotImpl,
                 Cmd.yank_nth_arg => Error.NotImpl,
                 Cmd.yank_pop => Error.NotImpl,
@@ -560,6 +575,7 @@ const KeyAction = enum(u8) {
     CTRL_D = 4,
     CTRL_E = 5,
     CTRL_F = 6,
+    CTRL_G = 7,
     CTRL_H = 8,
     TAB = 9,
     CTRL_J = 10,
@@ -609,49 +625,4 @@ fn _enableRawMode(fd: i32) !void {
 
     // put terminal in raw mode after flushing
     try os.tcsetattr(fd, os.TCSA.FLUSH, raw);
-}
-
-const Error = error{ Read, Write, NotImpl };
-
-pub fn main() !void {
-    //allocator
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    //stdout
-    const stdout = std.io.getStdOut();
-    const stdout_file = stdout.writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout_writer = bw.writer();
-    //stdin
-    const stdin = std.io.getStdIn(); //.reader();
-
-    try stdout_writer.print("Zigline :) Exit with C-d\n", .{});
-    try bw.flush(); // don't forget to flush!
-
-    var zigline = try Zigline.init(stdin, stdout, allocator);
-    defer zigline.deinit();
-    while (true) {
-        const read = try zigline.readline();
-        switch (read) {
-            .line => |ln| {
-                std.debug.print("{s}\n", .{ln});
-                if (ln.len > 0) {
-                    try zigline.addHistory(ln);
-                } else {
-                    zigline.alloc.free(ln);
-                }
-            },
-            .no_line => |nol| switch (nol) {
-                NoLine.CTRL_C => {
-                    std.debug.print("^C\n", .{});
-                },
-                NoLine.CTRL_D => break,
-            },
-        }
-    }
-
-    for (zigline.hist.items, 1..) |ln, i| {
-        std.debug.print("line {d}: `{s}'\n", .{ i, ln });
-    }
 }
