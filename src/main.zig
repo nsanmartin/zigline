@@ -183,19 +183,6 @@ const Zigline = struct {
         return cbuf[0];
     }
 
-    fn selfInsert(self: *Zigline, c: u8) !Input {
-        var l = self.lbuf.items.len;
-        try self.lbuf.append(c);
-        if (self.pos < l) {
-            while (self.pos < l) : (l -= 1) {
-                self.lbuf.items[l] = self.lbuf.items[l - 1];
-            }
-            self.lbuf.items[self.pos] = c;
-        }
-        self.pos += 1;
-        return edit_more;
-    }
-
     fn refreshLine(self: *Zigline, writer: anytype) !void {
         //TODO: maskmode  while (len--) abAppend(&ab,"*",1);
         if (self.pos > 0) {
@@ -203,6 +190,46 @@ const Zigline = struct {
         } else {
             try std.fmt.format(writer, "\r{s}\x1b[0K\r", .{self.lbuf.items});
         }
+    }
+
+    /// Commands
+    fn backwardDeleteChar(self: *Zigline) !Input {
+        if (self.pos > 0 and self.lbuf.items.len > 0) {
+            const from: usize = self.pos - 1;
+            const to: usize = self.lbuf.items.len - 1;
+            for (from..to) |i| {
+                self.lbuf.items[i] = self.lbuf.items[i + 1];
+            }
+            _ = self.lbuf.pop();
+            self.pos -= 1;
+        }
+        return edit_more;
+    }
+
+    fn backwardWord(self: *Zigline) !Input {
+        const l = self.lbuf.items.len;
+        if (l > 0) {
+            if (self.pos >= self.lbuf.items.len) {
+                self.pos -= 1;
+            }
+            while (self.pos > 0 and !std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
+                self.pos -= 1;
+            }
+            while (self.pos > 0 and std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
+                self.pos -= 1;
+            }
+        }
+        return edit_more;
+    }
+
+    fn clearScreen(self: *Zigline, writer: anytype) !Input {
+        _ = &self;
+        const written = try writer.write("\x1b[H\x1b[2J");
+        if (written != 7) {
+            return Error.Write;
+        }
+        //try stdout_writer.write("\x1b[H\x1b[2J", 7);
+        return edit_more;
     }
 
     fn deleteChar(self: *Zigline) !Input {
@@ -221,35 +248,12 @@ const Zigline = struct {
         return edit_more;
     }
 
-    fn backwardDeleteChar(self: *Zigline) !Input {
-        if (self.pos > 0 and self.lbuf.items.len > 0) {
-            const from: usize = self.pos - 1;
-            const to: usize = self.lbuf.items.len - 1;
-            for (from..to) |i| {
-                self.lbuf.items[i] = self.lbuf.items[i + 1];
-            }
-            _ = self.lbuf.pop();
-            self.pos -= 1;
+    fn forwardWord(self: *Zigline) !Input {
+        while (self.pos < self.lbuf.items.len and !std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
+            self.pos += 1;
         }
-        return edit_more;
-    }
-
-    fn clearScreen(self: *Zigline, writer: anytype) !Input {
-        _ = &self;
-        const written = try writer.write("\x1b[H\x1b[2J");
-        if (written != 7) {
-            return Error.Write;
-        }
-        //try stdout_writer.write("\x1b[H\x1b[2J", 7);
-        return edit_more;
-    }
-
-    fn transposeChars(self: *Zigline) Input {
-        if (self.lbuf.items.len > 1 and self.pos > 0) {
-            const i = if (self.pos < self.lbuf.items.len) self.pos else self.pos - 1;
-            const tmp = self.lbuf.items[i - 1];
-            self.lbuf.items[i - 1] = self.lbuf.items[i];
-            self.lbuf.items[i] = tmp;
+        while (self.pos < self.lbuf.items.len and std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
+            self.pos += 1;
         }
         return edit_more;
     }
@@ -283,15 +287,48 @@ const Zigline = struct {
         return edit_more;
     }
 
+    fn selfInsert(self: *Zigline, c: u8) !Input {
+        var l = self.lbuf.items.len;
+        try self.lbuf.append(c);
+        if (self.pos < l) {
+            while (self.pos < l) : (l -= 1) {
+                self.lbuf.items[l] = self.lbuf.items[l - 1];
+            }
+            self.lbuf.items[self.pos] = c;
+        }
+        self.pos += 1;
+        return edit_more;
+    }
+
+    fn transposeChars(self: *Zigline) Input {
+        if (self.lbuf.items.len > 1 and self.pos > 0) {
+            const i = if (self.pos < self.lbuf.items.len) self.pos else self.pos - 1;
+            const tmp = self.lbuf.items[i - 1];
+            self.lbuf.items[i - 1] = self.lbuf.items[i];
+            self.lbuf.items[i] = tmp;
+        }
+        return edit_more;
+    }
+
+    // End of Commands
+
     pub fn readline(self: *Zigline) !Read {
         try self.enableRawMode();
         defer self.disableRawMode();
+        self.tmpbuf.clearRetainingCapacity();
+        self.resetLbuf();
+        var bw = std.io.bufferedWriter(self.out.writer());
+        const stdout_writer = bw.writer();
         while (true) {
             const read = try self.readInput();
             switch (read) {
-                .edit_more => continue,
+                .edit_more => {
+                    try self.refreshLine(stdout_writer);
+                    try bw.flush();
+                },
                 .read => |r| {
-                    self.tmpbuf.clearRetainingCapacity();
+                    try std.fmt.format(stdout_writer, "\r\x1b[0K\r", .{});
+                    try bw.flush();
                     return r;
                 },
             }
@@ -354,9 +391,8 @@ const Zigline = struct {
             break :blk switch (cmd) {
                 Cmd.abort => Error.NotImpl,
                 Cmd.accept_line => {
+                    // lbuf need to be valid until refreshLine
                     const line = try self.alloc.dupe(u8, self.lbuf.items);
-                    self.resetLbuf();
-                    //const line = try self.lbuf.toOwnedSlice();
                     break :blk Input{ .read = Read{ .line = line } };
                 },
                 Cmd.backward_char => {
@@ -368,21 +404,7 @@ const Zigline = struct {
                 Cmd.backward_delete_char => try self.backwardDeleteChar(),
                 Cmd.backward_kill_line => Error.NotImpl,
                 Cmd.backward_kill_word => Error.NotImpl,
-                Cmd.backward_word => {
-                    const l = self.lbuf.items.len;
-                    if (l > 0) {
-                        if (self.pos >= self.lbuf.items.len) {
-                            self.pos -= 1;
-                        }
-                        while (self.pos > 0 and self.lbuf.items[self.pos] == ' ') {
-                            self.pos -= 1;
-                        }
-                        while (self.pos > 0 and self.lbuf.items[self.pos] != ' ') {
-                            self.pos -= 1;
-                        }
-                    }
-                    break :blk edit_more;
-                },
+                Cmd.backward_word => self.backwardWord(),
                 Cmd.beginning_of_history => Error.NotImpl,
                 Cmd.beginning_of_line => {
                     self.pos = 0;
@@ -424,15 +446,16 @@ const Zigline = struct {
                     break :blk edit_more;
                 },
                 Cmd.forward_search_history => Error.NotImpl,
-                Cmd.forward_word => {
-                    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] == ' ') {
-                        self.pos += 1;
-                    }
-                    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] != ' ') {
-                        self.pos += 1;
-                    }
-                    break :blk edit_more;
-                },
+                Cmd.forward_word => self.forwardWord(),
+                //{
+                //    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] == ' ') {
+                //        self.pos += 1;
+                //    }
+                //    while (self.pos < self.lbuf.items.len and self.lbuf.items[self.pos] != ' ') {
+                //        self.pos += 1;
+                //    }
+                //    break :blk edit_more;
+                //},
                 Cmd.history_search_backward => Error.NotImpl,
                 Cmd.history_search_forward => Error.NotImpl,
                 Cmd.history_substring_search_backward => Error.NotImpl,
@@ -482,7 +505,7 @@ const Zigline = struct {
                 Cmd.yank_nth_arg => Error.NotImpl,
                 Cmd.yank_pop => Error.NotImpl,
                 Cmd.ctrl_c => {
-                    self.resetLbuf();
+                    //self.resetLbuf();
                     break :blk Input{ .read = Read{ .no_line = NoLine.CTRL_C } };
                 },
                 Cmd.no_op => {
@@ -496,10 +519,10 @@ const Zigline = struct {
         const c: u8 = try self.readchar();
         const cmd = try self.keyActionToCmdEmacs(c);
         const input = try self.readCmd(cmd, c);
-        var bw = std.io.bufferedWriter(self.out.writer());
-        const stdout_writer = bw.writer();
-        try self.refreshLine(stdout_writer);
-        try bw.flush(); // don't forget to flush!
+        //var bw = std.io.bufferedWriter(self.out.writer());
+        //const stdout_writer = bw.writer();
+        //try self.refreshLine(stdout_writer);
+        //try bw.flush(); // don't forget to flush!
         return input;
     }
 
