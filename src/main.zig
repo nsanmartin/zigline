@@ -148,7 +148,9 @@ const Zigline = struct {
             .out = out,
             .alloc = allocator,
             .lbuf = std.ArrayList(u8).init(allocator),
+            .tmpbuf = std.ArrayList(u8).init(allocator),
             .hist = std.ArrayList([]const u8).init(allocator),
+            .histix = 0,
             .pos = 0,
             .rawmode = false,
         };
@@ -166,7 +168,9 @@ const Zigline = struct {
     out: std.fs.File,
     alloc: std.mem.Allocator,
     lbuf: std.ArrayList(u8),
+    tmpbuf: std.ArrayList(u8),
     hist: std.ArrayList([]const u8),
+    histix: usize,
     pos: usize,
     rawmode: bool,
 
@@ -405,7 +409,19 @@ const Zigline = struct {
                 Cmd.kill_word => Error.NotImpl,
                 Cmd.menu_complete => Error.NotImpl,
                 Cmd.menu_complete_backward => Error.NotImpl,
-                Cmd.next_history => Error.NotImpl,
+                Cmd.next_history => {
+                    if (self.histix > 0) {
+                        if (self.histix == 1) {
+                            self.lbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.tmpbuf.toOwnedSlice());
+                        } else {
+                            self.lbuf.clearRetainingCapacity();
+                            try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - self.histix + 1]);
+                        }
+                        self.histix -= 1;
+                        self.pos = self.lbuf.items.len;
+                    }
+                    break :blk edit_more;
+                },
                 Cmd.next_screen_line => Error.NotImpl,
                 Cmd.non_incremental_forward_search_history => Error.NotImpl,
                 Cmd.non_incremental_reverse_search_history => Error.NotImpl,
@@ -413,7 +429,19 @@ const Zigline = struct {
                 Cmd.overwrite_mode => Error.NotImpl,
                 Cmd.possible_completions => Error.NotImpl,
                 Cmd.prefix_meta => Error.NotImpl,
-                Cmd.previous_history => Error.NotImpl,
+                Cmd.previous_history => {
+                    const hlen = self.hist.items.len;
+                    if (hlen > 0 and self.histix < hlen) {
+                        if (self.histix == 0) {
+                            self.tmpbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.lbuf.toOwnedSlice());
+                        }
+                        self.lbuf.clearRetainingCapacity();
+                        try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - 1 - self.histix]);
+                        self.histix = self.histix +| 1;
+                        self.pos = self.lbuf.items.len;
+                    }
+                    break :blk edit_more;
+                },
                 Cmd.previous_screen_line => Error.NotImpl,
                 Cmd.print_last_kbd_macro => Error.NotImpl,
                 Cmd.quoted_insert => Error.NotImpl,
@@ -457,6 +485,7 @@ const Zigline = struct {
         const stdout_writer = bw.writer();
         try self.refreshLine(stdout_writer);
         try bw.flush(); // don't forget to flush!
+        self.tmpbuf.clearRetainingCapacity();
         return input;
     }
 
@@ -560,7 +589,7 @@ pub fn main() !void {
     //stdin
     const stdin = std.io.getStdIn(); //.reader();
 
-    try stdout_writer.print("Zigline :) Exit with C-c\n", .{});
+    try stdout_writer.print("Zigline :) Exit with C-d\n", .{});
     try bw.flush(); // don't forget to flush!
 
     var zigline = try Zigline.init(stdin, stdout, allocator);
@@ -569,14 +598,19 @@ pub fn main() !void {
         const read = try zigline.readline();
         switch (read) {
             .line => |ln| {
+                std.debug.print("{s}\n", .{ln});
                 if (ln.len > 0) {
-                    std.debug.print("{s}\n", .{ln});
                     try zigline.addHistory(ln);
                 } else {
                     zigline.alloc.free(ln);
                 }
             },
-            .no_line => break,
+            .no_line => |nol| switch (nol) {
+                NoLine.CTRL_C => {
+                    std.debug.print("^C\n", .{});
+                },
+                NoLine.CTRL_D => break,
+            },
         }
     }
 
