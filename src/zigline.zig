@@ -4,8 +4,6 @@ const io = @import("std").io;
 
 const Error = error{ Read, Write, NotImpl };
 
-const VMIN = 6; // TODO: where is this?
-const VTIME = 5; // TODO: where is this?
 var orig_termios: os.termios = undefined;
 
 const Cmd = enum {
@@ -534,10 +532,6 @@ pub const Zigline = struct {
         const c: u8 = try self.readchar();
         const cmd = try self.keyActionToCmdEmacs(c);
         const input = try self.readCmd(cmd, c);
-        //var bw = std.io.bufferedWriter(self.out.writer());
-        //const stdout_writer = bw.writer();
-        //try self.refreshLine(stdout_writer);
-        //try bw.flush(); // don't forget to flush!
         return input;
     }
 
@@ -610,18 +604,25 @@ fn _enableRawMode(fd: i32) !void {
     raw = orig_termios; // modify the original mode
     // input modes: no break, no CR to NL, no parity check, no strip char,
     // no start/stop output control.
-    raw.iflag &= ~(os.linux.BRKINT | os.linux.ICRNL | os.linux.INPCK | os.linux.ISTRIP | os.linux.IXON);
+    raw.iflag.BRKINT = false;
+    raw.iflag.ICRNL = false;
+    raw.iflag.INPCK = false;
+    raw.iflag.ISTRIP = false;
+    raw.iflag.IXON = false;
     // output modes - disable post processing
-    raw.oflag &= ~(os.linux.OPOST);
+    raw.oflag.OPOST = false;
     // control modes - set 8 bit chars
-    raw.cflag |= (os.linux.CS8);
+    raw.cflag.CSIZE = std.posix.CSIZE.CS8;
     // local modes - choing off, canonical off, no extended functions, no
     // signal chars (^Z,^C)
-    raw.lflag &= ~(os.linux.ECHO | os.linux.ICANON | os.linux.IEXTEN | os.linux.ISIG);
+    raw.lflag.ECHO = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.IEXTEN = false;
+    raw.lflag.ISIG = false;
     // control chars - set return condition: min number of bytes and
     // timer. We want read to return every single byte, without timeout.
-    raw.cc[VMIN] = 1;
-    raw.cc[VTIME] = 0; // 1 byte, no timer
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0; // 1 byte, no timer
 
     // put terminal in raw mode after flushing
     try os.tcsetattr(fd, os.TCSA.FLUSH, raw);
