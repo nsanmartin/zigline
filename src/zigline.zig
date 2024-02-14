@@ -180,22 +180,31 @@ pub const Zigline = struct {
     kill_ring_ix: usize,
     last_cmd: Cmd,
 
-    fn readchar(self: *Zigline) !u8 {
-        var cbuf: [1]u8 = undefined;
-        const read = try self.in.reader().read(&cbuf);
-        if (read < 1) {
-            return Error.Read;
+    pub fn readline(self: *Zigline) !Read {
+        try self.enableRawMode();
+        defer self.disableRawMode();
+        self.tmpbuf.clearRetainingCapacity();
+        self.resetLbuf();
+        var bw = std.io.bufferedWriter(self.out.writer());
+        const stdout_writer = bw.writer();
+        while (true) {
+            const read = try self.readInput();
+            switch (read) {
+                .edit_more => {
+                    try self.refreshLine(stdout_writer);
+                    try bw.flush();
+                },
+                .read => |r| {
+                    try std.fmt.format(stdout_writer, "\r\x1b[0K\r", .{});
+                    try bw.flush();
+                    return r;
+                },
+            }
         }
-        return cbuf[0];
     }
 
-    fn refreshLine(self: *Zigline, writer: anytype) !void {
-        //TODO: maskmode  while (len--) abAppend(&ab,"*",1);
-        if (self.pos > 0) {
-            try std.fmt.format(writer, "\r{s}\x1b[0K\r\x1b[{d}C", .{ self.lbuf.items, self.pos });
-        } else {
-            try std.fmt.format(writer, "\r{s}\x1b[0K\r", .{self.lbuf.items});
-        }
+    pub fn addHistory(self: *Zigline, line: []u8) !void {
+        try self.hist.append(line);
     }
 
     /// Commands
@@ -350,34 +359,12 @@ pub const Zigline = struct {
     // End of Commands
 
     // Utils
+
     fn getKillRingTop(self: *Zigline) []const u8 {
         return self.kill_ring.items[self.kill_ring.items.len - 1 - self.kill_ring_ix];
     }
 
     // End of Utils
-
-    pub fn readline(self: *Zigline) !Read {
-        try self.enableRawMode();
-        defer self.disableRawMode();
-        self.tmpbuf.clearRetainingCapacity();
-        self.resetLbuf();
-        var bw = std.io.bufferedWriter(self.out.writer());
-        const stdout_writer = bw.writer();
-        while (true) {
-            const read = try self.readInput();
-            switch (read) {
-                .edit_more => {
-                    try self.refreshLine(stdout_writer);
-                    try bw.flush();
-                },
-                .read => |r| {
-                    try std.fmt.format(stdout_writer, "\r\x1b[0K\r", .{});
-                    try bw.flush();
-                    return r;
-                },
-            }
-        }
-    }
 
     fn resetLbuf(self: *Zigline) void {
         if (self.lbuf.items.len > 0) {
@@ -436,7 +423,7 @@ pub const Zigline = struct {
         };
     }
 
-    pub fn readCmd(self: *Zigline, cmd: Cmd, c: u8) !Input {
+    fn readCmd(self: *Zigline, cmd: Cmd, c: u8) !Input {
         const lblen = self.lbuf.items.len;
         return blk: {
             break :blk switch (cmd) {
@@ -557,7 +544,25 @@ pub const Zigline = struct {
         };
     }
 
-    pub fn readInput(self: *Zigline) !Input {
+    fn readchar(self: *Zigline) !u8 {
+        var cbuf: [1]u8 = undefined;
+        const read = try self.in.reader().read(&cbuf);
+        if (read < 1) {
+            return Error.Read;
+        }
+        return cbuf[0];
+    }
+
+    fn refreshLine(self: *Zigline, writer: anytype) !void {
+        //TODO: maskmode  while (len--) abAppend(&ab,"*",1);
+        if (self.pos > 0) {
+            try std.fmt.format(writer, "\r{s}\x1b[0K\r\x1b[{d}C", .{ self.lbuf.items, self.pos });
+        } else {
+            try std.fmt.format(writer, "\r{s}\x1b[0K\r", .{self.lbuf.items});
+        }
+    }
+
+    fn readInput(self: *Zigline) !Input {
         const c: u8 = try self.readchar();
         const cmd = try self.keyActionToCmdEmacs(c);
         const input = try self.readCmd(cmd, c);
@@ -565,11 +570,7 @@ pub const Zigline = struct {
         return input;
     }
 
-    pub fn addHistory(self: *Zigline, line: []u8) !void {
-        try self.hist.append(line);
-    }
-
-    pub fn enableRawMode(self: *Zigline) !void {
+    fn enableRawMode(self: *Zigline) !void {
         //obtain fd from out file
         if (!self.rawmode) {
             try _enableRawMode(os.STDIN_FILENO);
@@ -577,7 +578,7 @@ pub const Zigline = struct {
         }
     }
 
-    pub fn disableRawMode(self: *Zigline) void {
+    fn disableRawMode(self: *Zigline) void {
         if (self.rawmode) {
             //TODO: obtain fd from out file
             const res = os.tcsetattr(os.STDIN_FILENO, os.TCSA.FLUSH, orig_termios);
