@@ -7,95 +7,95 @@ const Error = error{ Read, Write, NotImpl };
 var orig_termios: os.termios = undefined;
 
 const Cmd = enum {
-    abort, //(C_g)
+    abort, //(C-g)
     accept_line, //(Newline or Return)
-    backward_char, //(C_b)
+    backward_char, //(C-b)
     backward_delete_char, //(Rubout)
-    backward_kill_line, //(C_x Rubout)
-    backward_kill_word, //(M_DEL)
-    backward_word, //(M_b)
-    beginning_of_history, //(M_<)
-    beginning_of_line, //(C_a)
+    backward_kill_line, //(C-x Rubout)
+    backward_kill_word, //(M-DEL)
+    backward_word, //(M-b)
+    beginning_of_history, //(M-<)
+    beginning_of_line, //(C-a)
     bracketed_paste_begin, //()
-    call_last_kbd_macro, //(C_x e)
-    capitalize_word, //(M_c)
-    character_search, //(C_])
-    character_search_backward, //(M_C_])
-    clear_display, //(M_C_l)
-    clear_screen, //(C_l)
+    call_last_kbd_macro, //(C-x e)
+    capitalize_word, //(M-c)
+    character_search, //(C-])
+    character_search_backward, //(M-C-])
+    clear_display, //(M-C-l)
+    clear_screen, //(C-l)
     complete, //(TAB)
     copy_backward_word, //()
     copy_forward_word, //()
     copy_region_as_kill, //()
-    delete_char, //(C_d)
+    delete_char, //(C-d)
     delete_char_or_list, //()
     delete_horizontal_space, //()
-    digit_argument, //(M_0, M_1, … M__)
-    do_lowercase_version, //(M_A, M_B, M_x, …)
-    downcase_word, //(M_l)
+    digit_argument, //(M-0, M-1, … M-_)
+    do_lowercase_version, //(M-A, M-B, M-x, …)
+    downcase_word, //(M-l)
     dump_functions, //()
     dump_macros, //()
     dump_variables, //()
-    emacs_editing_mode, //(C_e)
-    end_kbd_macro, //(C_x ))
-    end_of_file, //(usually C_d)
-    end_of_history, //(M_>)
-    end_of_line, //(C_e)
-    exchange_point_and_mark, //(C_x C_x)
+    emacs_editing_mode, //(C-e)
+    end_kbd_macro, //(C-x ))
+    end_of_file, //(usually C-d)
+    end_of_history, //(M->)
+    end_of_line, //(C-e)
+    exchange_point_and_mark, //(C-x C-x)
     fetch_history, //()
     forward_backward_delete_char, //()
-    forward_char, //(C_f)
-    forward_search_history, //(C_s)
-    forward_word, //(M_f)
+    forward_char, //(C-f)
+    forward_search_history, //(C-s)
+    forward_word, //(M-f)
     history_search_backward, //()
     history_search_forward, //()
     history_substring_search_backward, //()
     history_substring_search_forward, //()
-    insert_comment, //(M_#)
-    insert_completions, //(M_*)
-    kill_line, //(C_k)
+    insert_comment, //(M-#)
+    insert_completions, //(M-*)
+    kill_line, //(C-k)
     kill_region, //()
     kill_whole_line, //()
-    kill_word, //(M_d)
+    kill_word, //(M-d)
     menu_complete, //()
     menu_complete_backward, //()
-    next_history, //(C_n)
+    next_history, //(C-n)
     next_screen_line, //()
-    non_incremental_forward_search_history, //(M_n)
-    non_incremental_reverse_search_history, //(M_p)
-    operate_and_get_next, //(C_o)
+    non_incremental_forward_search_history, //(M-n)
+    non_incremental_reverse_search_history, //(M-p)
+    operate_and_get_next, //(C-o)
     overwrite_mode, //()
-    possible_completions, //(M_?)
+    possible_completions, //(M-?)
     prefix_meta, //(ESC)
-    previous_history, //(C_p)
+    previous_history, //(C-p)
     previous_screen_line, //()
     print_last_kbd_macro, //()
-    quoted_insert, //(C_q or C_v)
-    re_read_init_file, //(C_x C_r)
+    quoted_insert, //(C-q or C-v)
+    re_read_init_file, //(C-x C-r)
     redraw_current_line, //()
-    reverse_search_history, //(C_r)
-    revert_line, //(M_r)
+    reverse_search_history, //(C-r)
+    revert_line, //(M-r)
     self_insert, //(a, b, A, 1, !, …)
-    set_mark, //(C_@)
-    shell_transpose_words, //(M_C_t)
+    set_mark, //(C-@)
+    shell_transpose_words, //(M-C-t)
     skip_csi_sequence, //()
-    start_kbd_macro, //(C_x ()
-    tab_insert, //(M_TAB)
-    tilde_expand, //(M_~)
-    transpose_chars, //(C_t)
-    transpose_words, //(M_t)
-    undo, //(C__ or C_x C_u)
+    start_kbd_macro, //(C-x ()
+    tab_insert, //(M-TAB)
+    tilde_expand, //(M-~)
+    transpose_chars, //(C-t)
+    transpose_words, //(M-t)
+    undo, //(C-_ or C-x C-u)
     universal_argument, //()
     unix_filename_rubout, //()
-    unix_line_discard, //(C_u)
-    unix_word_rubout, //(C_w)
-    upcase_word, //(M_u)
-    vi_editing_mode, //(M_C_j)
-    yank, //(C_y)
-    yank_last_arg, //(M_. or M__)
-    yank_nth_arg, //(M_C_y)
-    yank_pop, //(M_y)
-    ctrl_c, //C_c
+    unix_line_discard, //(C-u)
+    unix_word_rubout, //(C-w)
+    upcase_word, //(M-u)
+    vi_editing_mode, //(M-C-j)
+    yank, //(C-y)
+    yank_last_arg, //(M-. or M-_)
+    yank_nth_arg, //(M-C-y)
+    yank_pop, //(M-y)
+    ctrl_c, //C-c
     no_op,
 };
 
@@ -160,7 +160,6 @@ pub const Zigline = struct {
     }
 
     pub fn deinit(self: *Zigline) void {
-        _ = &self;
         for (self.hist.items) |ln| self.alloc.free(ln);
         self.hist.deinit();
         self.lbuf.deinit();
@@ -208,6 +207,8 @@ pub const Zigline = struct {
     }
 
     /// Commands
+    //
+
     fn backwardDeleteChar(self: *Zigline) !Input {
         if (self.pos > 0 and self.lbuf.items.len > 0) {
             const from: usize = self.pos - 1;
@@ -356,9 +357,11 @@ pub const Zigline = struct {
         }
         return edit_more;
     }
+
     // End of Commands
 
-    // Utils
+    /// Utils
+    //
 
     fn getKillRingTop(self: *Zigline) []const u8 {
         return self.kill_ring.items[self.kill_ring.items.len - 1 - self.kill_ring_ix];
@@ -372,6 +375,7 @@ pub const Zigline = struct {
             self.pos = 0;
         }
     }
+
     // fn inputToCmdVi(self: *Zigline, mode: ViMode, c: u8) !Cmd { TODO!
 
     fn keyActionToCmdEmacs(self: *Zigline, c: u8) !Cmd {
