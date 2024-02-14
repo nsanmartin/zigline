@@ -155,6 +155,7 @@ pub const Zigline = struct {
             .rawmode = false,
             .kill_ring = std.ArrayList([]const u8).init(allocator),
             .kill_ring_ix = 0,
+            .last_cmd = Cmd.no_op,
         };
     }
 
@@ -177,6 +178,7 @@ pub const Zigline = struct {
     rawmode: bool,
     kill_ring: std.ArrayList([]const u8),
     kill_ring_ix: usize,
+    last_cmd: Cmd,
 
     fn readchar(self: *Zigline) !u8 {
         var cbuf: [1]u8 = undefined;
@@ -329,13 +331,30 @@ pub const Zigline = struct {
 
     fn yank(self: *Zigline) !Input {
         if (self.kill_ring.items.len > 0) {
-            const text = self.kill_ring.items[self.kill_ring.items.len - 1 - self.kill_ring_ix];
+            const text = self.getKillRingTop();
             try self.lbuf.insertSlice(self.pos, text);
         }
         return edit_more;
     }
 
+    fn yank_pop(self: *Zigline) !Input {
+        if ((self.last_cmd == Cmd.yank or self.last_cmd == Cmd.yank_pop) and self.kill_ring.items.len > 1) {
+            const prev_yank_len = self.getKillRingTop().len;
+            self.kill_ring_ix = (self.kill_ring_ix + 1) % self.kill_ring.items.len;
+            const text = self.getKillRingTop();
+            const l = if (prev_yank_len + self.pos < self.lbuf.items.len) prev_yank_len else self.lbuf.items.len - 1;
+            try self.lbuf.replaceRange(self.pos, l, text);
+        }
+        return edit_more;
+    }
     // End of Commands
+
+    // Utils
+    fn getKillRingTop(self: *Zigline) []const u8 {
+        return self.kill_ring.items[self.kill_ring.items.len - 1 - self.kill_ring_ix];
+    }
+
+    // End of Utils
 
     pub fn readline(self: *Zigline) !Read {
         try self.enableRawMode();
@@ -395,8 +414,9 @@ pub const Zigline = struct {
             @intFromEnum(KeyAction.CTRL_Y) => Cmd.yank,
             @intFromEnum(KeyAction.ESC) => switch (try self.readchar()) {
                 @intFromEnum(KeyAction.ESC) => Cmd.no_op,
-                'f', 'F' => Cmd.forward_word,
                 'b', 'B' => Cmd.backward_word,
+                'f', 'F' => Cmd.forward_word,
+                'y', 'Y' => Cmd.yank_pop,
                 // 91
                 '[' => switch (try self.readchar()) {
                     // 51
@@ -525,7 +545,7 @@ pub const Zigline = struct {
                 Cmd.yank => self.yank(),
                 Cmd.yank_last_arg => Error.NotImpl,
                 Cmd.yank_nth_arg => Error.NotImpl,
-                Cmd.yank_pop => Error.NotImpl,
+                Cmd.yank_pop => self.yank_pop(),
                 Cmd.ctrl_c => {
                     //self.resetLbuf();
                     break :blk Input{ .read = Read{ .no_line = NoLine.CTRL_C } };
@@ -541,6 +561,7 @@ pub const Zigline = struct {
         const c: u8 = try self.readchar();
         const cmd = try self.keyActionToCmdEmacs(c);
         const input = try self.readCmd(cmd, c);
+        self.last_cmd = cmd;
         return input;
     }
 
