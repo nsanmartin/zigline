@@ -2,7 +2,7 @@ const std = @import("std");
 const os = @import("std").os;
 const io = @import("std").io;
 
-const Error = error{ Read, Write, NotImpl };
+const Error = error{ Read, Write, NotImpl, IndexError };
 
 var orig_termios: os.termios = undefined;
 
@@ -114,14 +114,16 @@ pub const Read = union(ReadType) {
     no_line: NoLine,
 };
 
-const InputType = enum { edit_more, read };
+const InputType = enum { edit_more, clear_screen, read };
 
 const Input = union(InputType) {
     edit_more: u8,
+    clear_screen: u8,
     read: Read,
 };
 
 const edit_more = Input{ .edit_more = 0 };
+const clear_screen = Input{ .clear_screen = 0 };
 
 pub const Zigline = struct {
     // struct linenoiseState {
@@ -150,7 +152,7 @@ pub const Zigline = struct {
             .lbuf = std.ArrayList(u8).init(allocator),
             .tmpbuf = std.ArrayList(u8).init(allocator),
             .hist = std.ArrayList([]const u8).init(allocator),
-            .histix = 0,
+            .hist_ptr = 0,
             .pos = 0,
             .rawmode = false,
             .kill_ring = std.ArrayList([]const u8).init(allocator),
@@ -161,8 +163,10 @@ pub const Zigline = struct {
 
     pub fn deinit(self: *Zigline) void {
         for (self.hist.items) |ln| self.alloc.free(ln);
+        for (self.kill_ring.items) |item| self.alloc.free(item);
         self.hist.deinit();
         self.lbuf.deinit();
+        self.tmpbuf.deinit();
         self.disableRawMode();
     }
 
@@ -172,7 +176,7 @@ pub const Zigline = struct {
     lbuf: std.ArrayList(u8),
     tmpbuf: std.ArrayList(u8),
     hist: std.ArrayList([]const u8),
-    histix: usize,
+    hist_ptr: usize,
     pos: usize,
     rawmode: bool,
     kill_ring: std.ArrayList([]const u8),
@@ -193,6 +197,11 @@ pub const Zigline = struct {
                     try self.refreshLine(stdout_writer);
                     try bw.flush();
                 },
+                .clear_screen => {
+                    try self.clearScreen(stdout_writer);
+                    try self.refreshLine(stdout_writer);
+                    try bw.flush();
+                },
                 .read => |r| {
                     try std.fmt.format(stdout_writer, "\r\x1b[0K\r", .{});
                     try bw.flush();
@@ -203,7 +212,9 @@ pub const Zigline = struct {
     }
 
     pub fn addHistory(self: *Zigline, line: []u8) !void {
-        try self.hist.append(line);
+        if (self.hist.items.len == 0 or !std.mem.eql(u8, self.hist.getLast(), line)) {
+            try self.hist.append(line);
+        }
     }
 
     /// Commands
@@ -211,11 +222,7 @@ pub const Zigline = struct {
 
     fn backwardDeleteChar(self: *Zigline) !Input {
         if (self.pos > 0 and self.lbuf.items.len > 0) {
-            const from: usize = self.pos - 1;
-            const to: usize = self.lbuf.items.len - 1;
-            for (from..to) |i| {
-                self.lbuf.items[i] = self.lbuf.items[i + 1];
-            }
+            try moveMemBackwards(self.lbuf.items, self.pos, self.pos - 1);
             _ = self.lbuf.pop();
             self.pos -= 1;
         }
@@ -224,51 +231,57 @@ pub const Zigline = struct {
 
     fn backwardKillLine(self: *Zigline) !Input {
         if (self.pos > 0) {
-            const text = try self.alloc.dupe(u8, self.lbuf.items[0..self.pos]);
-            try self.kill_ring.append(text);
-            for (self.pos..self.lbuf.items.len) |i| {
-                self.lbuf.items[i - self.pos] = self.lbuf.items[i];
-            }
+            try self.cloneToKillRing(self.lbuf.items[0..self.pos]);
+            try moveMemBackwards(self.lbuf.items, self.pos, 0);
             self.lbuf.shrinkRetainingCapacity(self.lbuf.items.len - self.pos);
             self.pos = 0;
         }
         return edit_more;
     }
 
-    fn backwardWord(self: *Zigline) !Input {
-        const l = self.lbuf.items.len;
-        if (l > 0) {
-            if (self.pos >= self.lbuf.items.len) {
-                self.pos -= 1;
-            }
-            while (self.pos > 0 and !std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
-                self.pos -= 1;
-            }
-            while (self.pos > 0 and std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
-                self.pos -= 1;
-            }
+    fn backwardKillWord(self: *Zigline) !Input {
+        if (self.lbuf.items.len > 0) {
+            const old_pos = self.pos;
+            self.pos = getBackwardWordIndex(self.lbuf.items, self.pos);
+            try self.cloneToKillRing(self.lbuf.items[self.pos..old_pos]);
+            try moveMemBackwards(self.lbuf.items, old_pos, self.pos);
+            self.lbuf.shrinkRetainingCapacity(self.lbuf.items.len - (old_pos - self.pos));
         }
         return edit_more;
     }
 
-    fn clearScreen(self: *Zigline, writer: anytype) !Input {
+    fn backwardWord(self: *Zigline) !Input {
+        self.pos = getBackwardWordIndex(self.lbuf.items, self.pos);
+        return edit_more;
+    }
+
+    fn beginningOfHistory(self: *Zigline) !Input {
+        const hlen = self.hist.items.len;
+        if (hlen > 0) {
+            if (self.hist_ptr == 0) {
+                self.tmpbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.lbuf.toOwnedSlice());
+            } else {
+                self.lbuf.clearRetainingCapacity();
+            }
+            self.hist_ptr = hlen - 1;
+            try self.lbuf.appendSlice(self.hist.items[hlen - 1 - self.hist_ptr]);
+            self.pos = self.lbuf.items.len;
+        }
+        return edit_more;
+    }
+
+    fn clearScreen(self: *Zigline, writer: anytype) !void {
         _ = &self;
         const written = try writer.write("\x1b[H\x1b[2J");
         if (written != 7) {
             return Error.Write;
         }
-        //try stdout_writer.write("\x1b[H\x1b[2J", 7);
-        return edit_more;
     }
 
     fn deleteChar(self: *Zigline) !Input {
         const l = self.lbuf.items.len;
         if (l > 0 and self.pos < l) {
-            const from: usize = self.pos;
-            const to: usize = self.lbuf.items.len - 1;
-            for (from..to) |i| {
-                self.lbuf.items[i] = self.lbuf.items[i + 1];
-            }
+            try moveMemBackwards(self.lbuf.items, self.pos + 1, self.pos);
             _ = self.lbuf.pop();
             if (self.pos > l) {
                 self.pos -= 1;
@@ -277,25 +290,52 @@ pub const Zigline = struct {
         return edit_more;
     }
 
-    fn forwardWord(self: *Zigline) !Input {
-        while (self.pos < self.lbuf.items.len and !std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
-            self.pos += 1;
+    fn endOfHistory(self: *Zigline) !Input {
+        const hlen = self.hist.items.len;
+        if (hlen > 0 and self.hist_ptr > 0) {
+            self.lbuf.clearRetainingCapacity();
+            self.hist_ptr = 0;
+            if (self.tmpbuf.items.len > 0) {
+                self.lbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.tmpbuf.toOwnedSlice());
+            } else {
+                try self.lbuf.appendSlice(self.hist.items[hlen - 1 - self.hist_ptr]);
+            }
+            self.pos = self.lbuf.items.len;
         }
-        while (self.pos < self.lbuf.items.len and std.ascii.isAlphanumeric(self.lbuf.items[self.pos])) {
-            self.pos += 1;
+        return edit_more;
+    }
+
+    fn forwardWord(self: *Zigline) !Input {
+        self.pos = getForwardWordIndex(self.lbuf.items, self.pos);
+        return edit_more;
+    }
+
+    fn killLine(self: *Zigline) !Input {
+        try self.cloneToKillRing(self.lbuf.items);
+        self.lbuf.shrinkRetainingCapacity(self.pos);
+        return edit_more;
+    }
+
+    fn killWord(self: *Zigline) !Input {
+        if (self.lbuf.items.len > self.pos) {
+            const new_pos = getForwardWordIndex(self.lbuf.items, self.pos);
+            try self.cloneToKillRing(self.lbuf.items[self.pos..new_pos]);
+            try moveMemBackwards(self.lbuf.items, new_pos, self.pos);
+            const len_delta = new_pos - self.pos;
+            self.lbuf.shrinkRetainingCapacity(self.lbuf.items.len - len_delta);
         }
         return edit_more;
     }
 
     fn nextHistory(self: *Zigline) !Input {
-        if (self.histix > 0) {
-            if (self.histix == 1) {
+        if (self.hist_ptr > 0) { // else: end of history
+            if (self.hist_ptr == 1) { // moving back to end
                 self.lbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.tmpbuf.toOwnedSlice());
             } else {
                 self.lbuf.clearRetainingCapacity();
-                try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - self.histix + 1]);
+                try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - self.hist_ptr + 1]);
             }
-            self.histix -= 1;
+            self.hist_ptr -= 1;
             self.pos = self.lbuf.items.len;
         }
         return edit_more;
@@ -303,14 +343,14 @@ pub const Zigline = struct {
 
     fn previousHistory(self: *Zigline) !Input {
         const hlen = self.hist.items.len;
-        if (hlen > 0 and self.histix < hlen) {
-            if (self.histix == 0) {
+        if (hlen > 0 and self.hist_ptr < hlen) {
+            if (self.hist_ptr == 0) {
                 self.tmpbuf = std.ArrayList(u8).fromOwnedSlice(self.alloc, try self.lbuf.toOwnedSlice());
             } else {
                 self.lbuf.clearRetainingCapacity();
             }
-            try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - 1 - self.histix]);
-            self.histix = self.histix + 1;
+            try self.lbuf.appendSlice(self.hist.items[self.hist.items.len - 1 - self.hist_ptr]);
+            self.hist_ptr = self.hist_ptr + 1;
             self.pos = self.lbuf.items.len;
         }
         return edit_more;
@@ -339,6 +379,17 @@ pub const Zigline = struct {
         return edit_more;
     }
 
+    fn unixWordRobout(self: *Zigline) !Input {
+        if (self.lbuf.items.len > 0) {
+            const old_pos = self.pos;
+            self.pos = getBackwardLargeWordIndex(self.lbuf.items, self.pos);
+            try self.cloneToKillRing(self.lbuf.items[self.pos..old_pos]);
+            try moveMemBackwards(self.lbuf.items, old_pos, self.pos);
+            self.lbuf.shrinkRetainingCapacity(self.lbuf.items.len - (old_pos - self.pos));
+        }
+        return edit_more;
+    }
+
     fn yank(self: *Zigline) !Input {
         if (self.kill_ring.items.len > 0) {
             const text = self.getKillRingTop();
@@ -347,12 +398,12 @@ pub const Zigline = struct {
         return edit_more;
     }
 
-    fn yank_pop(self: *Zigline) !Input {
+    fn yankPop(self: *Zigline) !Input {
         if ((self.last_cmd == Cmd.yank or self.last_cmd == Cmd.yank_pop) and self.kill_ring.items.len > 1) {
             const prev_yank_len = self.getKillRingTop().len;
             self.kill_ring_ix = (self.kill_ring_ix + 1) % self.kill_ring.items.len;
             const text = self.getKillRingTop();
-            const l = if (prev_yank_len + self.pos < self.lbuf.items.len) prev_yank_len else self.lbuf.items.len - 1;
+            const l = if ((prev_yank_len + self.pos) < self.lbuf.items.len) prev_yank_len else self.lbuf.items.len - self.pos;
             try self.lbuf.replaceRange(self.pos, l, text);
         }
         return edit_more;
@@ -406,8 +457,13 @@ pub const Zigline = struct {
             @intFromEnum(KeyAction.ESC) => switch (try self.readchar()) {
                 @intFromEnum(KeyAction.ESC) => Cmd.no_op,
                 'b', 'B' => Cmd.backward_word,
+                'd', 'D' => Cmd.kill_word,
                 'f', 'F' => Cmd.forward_word,
-                'y', 'Y' => Cmd.yank_pop,
+                'y', 'Y' => if (self.last_cmd == Cmd.yank_pop or self.last_cmd == Cmd.yank) Cmd.yank_pop else Cmd.no_op,
+                '<' => Cmd.beginning_of_history,
+                '>' => Cmd.end_of_history,
+                @intFromEnum(KeyAction.BACKSPACE) => Cmd.backward_kill_word,
+
                 // 91
                 '[' => switch (try self.readchar()) {
                     // 51
@@ -445,9 +501,9 @@ pub const Zigline = struct {
                 },
                 Cmd.backward_delete_char => try self.backwardDeleteChar(),
                 Cmd.backward_kill_line => try self.backwardKillLine(),
-                Cmd.backward_kill_word => Error.NotImpl,
+                Cmd.backward_kill_word => self.backwardKillWord(),
                 Cmd.backward_word => self.backwardWord(),
-                Cmd.beginning_of_history => Error.NotImpl,
+                Cmd.beginning_of_history => try self.beginningOfHistory(),
                 Cmd.beginning_of_line => {
                     self.pos = 0;
                     break :blk edit_more;
@@ -458,7 +514,7 @@ pub const Zigline = struct {
                 Cmd.character_search => Error.NotImpl,
                 Cmd.character_search_backward => Error.NotImpl,
                 Cmd.clear_display => Error.NotImpl,
-                Cmd.clear_screen => Error.NotImpl, //try self.clearScreen(),
+                Cmd.clear_screen => return clear_screen,
                 Cmd.complete => Error.NotImpl,
                 Cmd.copy_backward_word => Error.NotImpl,
                 Cmd.copy_forward_word => Error.NotImpl,
@@ -475,7 +531,7 @@ pub const Zigline = struct {
                 Cmd.emacs_editing_mode => Error.NotImpl,
                 Cmd.end_kbd_macro => Error.NotImpl,
                 Cmd.end_of_file => Input{ .read = Read{ .no_line = NoLine.CTRL_D } },
-                Cmd.end_of_history => Error.NotImpl,
+                Cmd.end_of_history => try self.endOfHistory(),
                 Cmd.end_of_line => {
                     self.pos = lblen;
                     break :blk edit_more;
@@ -495,10 +551,10 @@ pub const Zigline = struct {
                 Cmd.history_substring_search_forward => Error.NotImpl,
                 Cmd.insert_comment => Error.NotImpl,
                 Cmd.insert_completions => Error.NotImpl,
-                Cmd.kill_line => Error.NotImpl,
+                Cmd.kill_line => self.killLine(),
                 Cmd.kill_region => Error.NotImpl,
                 Cmd.kill_whole_line => Error.NotImpl,
-                Cmd.kill_word => Error.NotImpl,
+                Cmd.kill_word => self.killWord(),
                 Cmd.menu_complete => Error.NotImpl,
                 Cmd.menu_complete_backward => Error.NotImpl,
                 Cmd.next_history => self.nextHistory(),
@@ -530,13 +586,13 @@ pub const Zigline = struct {
                 Cmd.universal_argument => Error.NotImpl,
                 Cmd.unix_filename_rubout => Error.NotImpl,
                 Cmd.unix_line_discard => Error.NotImpl,
-                Cmd.unix_word_rubout => Error.NotImpl,
+                Cmd.unix_word_rubout => self.unixWordRobout(),
                 Cmd.upcase_word => Error.NotImpl,
                 Cmd.vi_editing_mode => Error.NotImpl,
                 Cmd.yank => self.yank(),
                 Cmd.yank_last_arg => Error.NotImpl,
                 Cmd.yank_nth_arg => Error.NotImpl,
-                Cmd.yank_pop => self.yank_pop(),
+                Cmd.yank_pop => self.yankPop(),
                 Cmd.ctrl_c => {
                     //self.resetLbuf();
                     break :blk Input{ .read = Read{ .no_line = NoLine.CTRL_C } };
@@ -592,6 +648,53 @@ pub const Zigline = struct {
                 _ = &err;
                 std.debug.print("Error returned by tcssetattr", .{});
             }
+        }
+    }
+
+    fn cloneToKillRing(self: *Zigline, buf: []const u8) !void {
+        const text = try self.alloc.dupe(u8, buf);
+        try self.kill_ring.append(text);
+    }
+
+    fn getBackwardLargeWordIndex(buf: []const u8, pos: usize) usize {
+        var p = if (pos < buf.len) pos else if (buf.len > 0) buf.len - 1 else 0;
+        while (p > 0 and buf[p] == ' ') {
+            p -= 1;
+        }
+        while (p > 0 and buf[p] != ' ') {
+            p -= 1;
+        }
+        return p;
+    }
+
+    fn getBackwardWordIndex(buf: []const u8, pos: usize) usize {
+        var p = if (pos < buf.len) pos else if (buf.len > 0) buf.len - 1 else 0;
+        while (p > 0 and !std.ascii.isAlphanumeric(buf[p])) {
+            p -= 1;
+        }
+        while (p > 0 and std.ascii.isAlphanumeric(buf[p])) {
+            p -= 1;
+        }
+        return p;
+    }
+
+    fn getForwardWordIndex(buf: []const u8, pos: usize) usize {
+        var p = pos;
+        while (p < buf.len and !std.ascii.isAlphanumeric(buf[p])) {
+            p += 1;
+        }
+        while (p < buf.len and std.ascii.isAlphanumeric(buf[p])) {
+            p += 1;
+        }
+        return p;
+    }
+
+    fn moveMemBackwards(buf: []u8, from: usize, to: usize) !void {
+        if (from <= to or buf.len < from) {
+            return Error.IndexError;
+        }
+        for (from..buf.len) |i| {
+            buf[to + i - from] = buf[i];
         }
     }
 };
