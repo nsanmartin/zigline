@@ -1,10 +1,11 @@
 const std = @import("std");
 const os = @import("std").os;
 const io = @import("std").io;
+const posix = @import("std").posix;
 
 const Error = error{ Read, Write, NotImpl, IndexError };
 
-var orig_termios: os.termios = undefined;
+var orig_termios: posix.termios = undefined;
 
 const Cmd = enum {
     abort, //(C-g)
@@ -633,7 +634,7 @@ pub const Zigline = struct {
     fn enableRawMode(self: *Zigline) !void {
         //obtain fd from out file
         if (!self.rawmode) {
-            try _enableRawMode(os.STDIN_FILENO);
+            try _enableRawMode(posix.STDIN_FILENO);
             self.rawmode = true;
         }
     }
@@ -641,7 +642,7 @@ pub const Zigline = struct {
     fn disableRawMode(self: *Zigline) void {
         if (self.rawmode) {
             //TODO: obtain fd from out file
-            const res = os.tcsetattr(os.STDIN_FILENO, os.TCSA.FLUSH, orig_termios);
+            const res = posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.FLUSH, orig_termios);
             if (res) {
                 self.rawmode = false;
             } else |err| {
@@ -731,13 +732,13 @@ const KeyAction = enum(u8) {
 };
 
 fn _enableRawMode(fd: i32) !void {
-    var raw: os.termios = undefined;
+    var raw: posix.termios = undefined;
 
-    if (!os.isatty(os.STDIN_FILENO)) { //TODO: raise
+    if (!posix.isatty(posix.STDIN_FILENO)) { //TODO: raise
         return;
     }
 
-    orig_termios = try os.tcgetattr(fd);
+    orig_termios = try posix.tcgetattr(fd);
 
     raw = orig_termios; // modify the original mode
     // input modes: no break, no CR to NL, no parity check, no strip char,
@@ -763,5 +764,5 @@ fn _enableRawMode(fd: i32) !void {
     raw.cc[@intFromEnum(std.posix.V.TIME)] = 0; // 1 byte, no timer
 
     // put terminal in raw mode after flushing
-    try os.tcsetattr(fd, os.TCSA.FLUSH, raw);
+    try posix.tcsetattr(fd, posix.TCSA.FLUSH, raw);
 }
